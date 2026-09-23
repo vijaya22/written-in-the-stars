@@ -2,13 +2,16 @@
 // several cities and times, and reports success rate, fit error, brightness.
 //   npm run eval            summary
 //   npm run eval -- -v      per-name detail
+//   npm run eval -- --night search dusk to dawn (30-min steps) instead of one fixed time
 
 import { readFileSync } from "node:fs";
 import { visibleSky, type CatalogStar } from "../src/astro.ts";
-import { matchName } from "../src/matcher.ts";
+import { matchName, type NameMatch } from "../src/matcher.ts";
+import { darkTimes, searchNight } from "../src/night.ts";
 
 const catalog: CatalogStar[] = JSON.parse(readFileSync("public/stars.json", "utf8"));
 const verbose = process.argv.includes("-v");
+const night = process.argv.includes("--night");
 
 const NAMES = ["ANA", "LEO", "MAYA", "OMAR", "SOFIA", "VIJAYA", "PRIYA", "JAMES", "ZOE", "BEATRIZ", "KWAME", "GUSTAVO", "XU", "QUINN", "ELIZABETH"];
 const PLACES: [string, number, number][] = [
@@ -23,20 +26,38 @@ const DATES = ["2026-01-15", "2026-04-15", "2026-07-15", "2026-09-23"];
 
 let letters = 0, found = 0, fullNames = 0, runs = 0, errSum = 0, magSum = 0, ms = 0;
 const perChar = new Map<string, [number, number]>();
+const layouts = new Map<string, Map<string, number>>(); // name-length bucket -> layout -> count
+const bucket = (n: number) => (n <= 3 ? "2-3" : n <= 5 ? "4-5" : n <= 7 ? "6-7" : "8+");
 
 for (const [place, lat, lon] of PLACES) {
   for (const day of DATES) {
     const date = new Date(`${day}T22:00:00Z`);
     date.setUTCHours(date.getUTCHours() - Math.round(lon / 15));
     const sky = visibleSky(catalog, date, lat, lon);
+    const noon = new Date(date.getTime() - 10 * 3600000);
+    const times = night ? darkTimes(noon, lat, lon, 30) : [];
+    if (night && times.length === 0) {
+      console.log(`${place} ${day}: no dark hours, skipped`);
+      continue;
+    }
     for (const name of NAMES) {
       const t0 = performance.now();
-      const m = matchName(name, sky);
+      let m: NameMatch;
+      if (night) {
+        let last: NameMatch | undefined;
+        for (const p of searchNight(name, catalog, times, lat, lon)) last = p.best?.match;
+        m = last!;
+      } else {
+        m = matchName(name, sky);
+      }
       ms += performance.now() - t0;
       runs++;
       letters += name.length;
       found += m.letters.length;
       if (m.missing.length === 0) fullNames++;
+      const b = layouts.get(bucket(name.length)) ?? new Map<string, number>();
+      b.set(m.layout, (b.get(m.layout) ?? 0) + 1);
+      layouts.set(bucket(name.length), b);
       for (const l of m.letters) { errSum += l.error; magSum += l.meanMag; }
       for (const ch of name) {
         const e = perChar.get(ch) ?? [0, 0];
@@ -48,7 +69,7 @@ for (const [place, lat, lon] of PLACES) {
         const desc = m.letters
           .map((l) => `${l.char}(err ${l.error.toFixed(3)}, mag ${l.meanMag.toFixed(1)}, h ${l.height.toFixed(2)})`)
           .join(" ");
-        console.log(`${place.padEnd(10)} ${day} ${name.padEnd(10)} ${desc}${m.missing.length ? "  MISSING " + m.missing.map((x) => x.char).join("") : ""}`);
+        console.log(`${place.padEnd(10)} ${day} ${name.padEnd(10)} ${m.layout.padEnd(9)} ${desc}${m.missing.length ? "  MISSING " + m.missing.map((x) => x.char).join("") : ""}`);
       }
     }
   }
@@ -57,5 +78,12 @@ for (const [place, lat, lon] of PLACES) {
 console.log(`\nruns: ${runs}   avg time: ${(ms / runs).toFixed(0)} ms/name`);
 console.log(`letters found: ${found}/${letters} (${((100 * found) / letters).toFixed(1)}%)   full names: ${fullNames}/${runs}`);
 console.log(`mean fit error: ${(errSum / found).toFixed(3)} letter-heights   mean star magnitude: ${(magSum / found).toFixed(2)}`);
+console.log("reading order by name length:");
+for (const [b, counts] of [...layouts].sort()) {
+  const n = [...counts.values()].reduce((x, y) => x + y, 0);
+  const inOrder = n - (counts.get("scattered") ?? 0);
+  const detail = [...counts].map(([l, c]) => `${l} ${c}`).join(", ");
+  console.log(`  ${b.padEnd(4)} letters: ${inOrder}/${n} in order (${detail})`);
+}
 const weak = [...perChar].filter(([, [ok, n]]) => ok < n).map(([c, [ok, n]]) => `${c} ${ok}/${n}`);
 if (weak.length) console.log(`letters sometimes missing: ${weak.join(", ")}`);

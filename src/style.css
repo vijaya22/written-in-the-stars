@@ -72,6 +72,8 @@ figcaption { text-align: center; color: var(--muted); font-size: 0.9rem; margin-
 #legend .letter { font-family: Georgia, serif; font-size: 1.3rem; color: var(--accent); min-width: 1.2em; }
 #legend .missing { color: #d99; }
 #legend .also { margin-top: 6px; }
+#legend .note { color: var(--text); }
+#status { min-height: 1.5em; margin: 12px 0 0; color: var(--muted); font-size: 0.9rem; }
 
 footer { margin-top: 32px; font-size: 0.8rem; color: var(--muted); }
 footer a { color: var(--text); }

@@ -27,10 +27,11 @@
           <input id="when" type="datetime-local" />
         </label>
         <div class="actions">
-          <button type="submit">Find it</button>
+          <button type="submit">Find the best time tonight</button>
           <button type="button" id="locate" class="ghost">Use my location</button>
         </div>
       </form>
+      <p id="status" role="status"></p>
 
       <figure>
         <canvas id="sky"></canvas>
@@ -40,7 +41,8 @@
 
       <footer>
         Star positions from the <a href="https://github.com/astronexus/HYG-Database">HYG database</a> (CC BY-SA 4.0).
-        The chart is the whole sky overhead: north at the top, east on the left, as when you lie back and look up.
+        The chart is the whole sky overhead, as when you lie back and look up. It is turned so your name reads left to right;
+        the N/E/S/W marks show the real directions.
       </footer>
     </main>
     <script type="module" src="/src/main.ts"></script>

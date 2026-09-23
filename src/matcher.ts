@@ -1,11 +1,19 @@
-// Finds a name spelled out in real stars.
+// Finds a name spelled out in real stars, in reading order where possible.
 //
-// 1. For each letter, search for placements of its skeleton where every vertex
-//    lands on a star (similarity transform: shift, scale, small tilt, no mirror).
-//    Candidates are seeded from star pairs matching the glyph's two farthest
-//    vertices, then refit by least squares and scored on fit + brightness.
-// 2. Choose one candidate per letter with a beam search that forbids shared
-//    stars / overlapping letters and prefers a left-to-right, word-like layout.
+// A letter "matches" when every vertex of its skeleton lands on a star under a
+// similarity transform (shift, scale, rotation; no mirroring). Placements are
+// seeded from star pairs matching the glyph's two farthest vertices, then
+// refit by least squares and scored on fit + brightness.
+//
+// Layout, tried in order:
+//  1. "line": written like text. The first letter may face any direction (the
+//     chart is rotated afterwards so the word reads horizontally); each next
+//     letter is searched for only in the slot right after the previous one:
+//     same size, roughly the same baseline, allowed to bend a little.
+//  2. "two-lines": the same, wrapped onto two lines (long names).
+//  3. "scattered": letters placed anywhere, drawn with numbers so the order
+//     is still readable.
+// Each step reaches for fainter stars only when brighter ones can't do it.
 
 import type { SkyStar } from "./astro.ts";
 import { GLYPHS, type Glyph } from "./glyphs.ts";
@@ -14,47 +22,73 @@ export interface MatchOptions {
   minAlt: number; // ignore stars low on the horizon (haze, buildings)
   minHeight: number; // letter cap height, in chart units (horizon radius = 1)
   maxHeight: number;
-  maxTiltDeg: number; // letters stay roughly upright
   tolerance: number; // max vertex miss, as a fraction of letter height
   magLimits: number[]; // widen to fainter stars only when a letter can't be found
   minCandidates: number;
   beamWidth: number;
+  letterGap: number; // space between letters, in letter heights
+  maxBendDeg: number; // how much the baseline may turn from one letter to the next
+  maxTotalBendDeg: number;
+  maxWordWidth: number; // chart units a single line may span
+  slotGap: [number, number]; // how far off the expected spacing a letter may sit, in letter heights
+  slotShift: number; // how far above/below the baseline
+  slotGrow: number; // max size ratio between neighbouring letters
+  minWrapLength: number; // try two lines for names at least this long
+  scatterFallback: boolean; // when no ordered layout fits, place letters anywhere
 }
 
 export const DEFAULT_OPTIONS: MatchOptions = {
   minAlt: 15,
-  minHeight: 0.1,
+  minHeight: 0.07,
   maxHeight: 0.3,
-  maxTiltDeg: 25,
   tolerance: 0.1,
   magLimits: [4.5, 5.0, 5.5],
   minCandidates: 25,
-  beamWidth: 80,
+  beamWidth: 150,
+  letterGap: 0.3,
+  maxBendDeg: 12,
+  maxTotalBendDeg: 45,
+  maxWordWidth: 1.4,
+  slotGap: [-0.3, 0.6],
+  slotShift: 0.3,
+  slotGrow: 1.25,
+  minWrapLength: 6,
+  scatterFallback: true,
 };
 
 export interface LetterMatch {
   char: string;
   position: number; // index of the letter within the name
+  line: number;
   stars: SkyStar[]; // one per glyph vertex
   edges: [number, number][];
   error: number; // rms vertex miss, in letter heights
   meanMag: number;
   height: number;
-  tiltDeg: number;
+  angle: number; // radians: direction of the letter's baseline on the chart
+  origin: [number, number]; // where the glyph's (0,0) (baseline, left) lands
   cx: number;
   cy: number;
   box: [number, number, number, number]; // minX, minY, maxX, maxY
   score: number;
 }
 
+export type Layout = "line" | "two-lines" | "scattered";
+
 export interface NameMatch {
   name: string;
+  layout: Layout;
   letters: LetterMatch[];
   missing: { char: string; position: number }[];
   cost: number;
+  /** Rotate the chart by -readingAngle to make the name read left to right. */
+  readingAngle: number;
 }
 
 // ---------------------------------------------------------------------------
+// Geometry
+
+const DEG = Math.PI / 180;
 
 class Grid {
   private cells = new Map<number, SkyStar[]>();
@@ -97,7 +131,6 @@ function fitSimilarity(src: [number, number][], dst: { x: number; y: number }[])
     norm += px * px + py * py;
   }
   a /= norm; b /= norm; // scale*cos, scale*sin
-  const scale = Math.hypot(a, b);
   let sq = 0;
   for (let i = 0; i < n; i++) {
     const px = src[i][0] - sx, py = src[i][1] - sy;
@@ -105,7 +138,13 @@ function fitSimilarity(src: [number, number][], dst: { x: number; y: number }[])
     const ey = dy + b * px + a * py - dst[i].y;
     sq += ex * ex + ey * ey;
   }
-  return { scale, angle: Math.atan2(b, a), rms: Math.sqrt(sq / n) / scale };
+  const scale = Math.hypot(a, b);
+  return {
+    scale,
+    angle: Math.atan2(b, a),
+    rms: Math.sqrt(sq / n) / scale,
+    origin: [dx - (a * sx - b * sy), dy - (b * sx + a * sy)] as [number, number],
+  };
 }
 
 function farthestPair(pts: [number, number][]): [number, number] {
@@ -118,144 +157,317 @@ function farthestPair(pts: [number, number][]): [number, number] {
   return best;
 }
 
-function letterCandidates(char: string, glyph: Glyph, stars: SkyStar[], opt: MatchOptions): LetterMatch[] {
-  // Template in screen orientation (y down), cap height 1.
-  const tpl: [number, number][] = glyph.pts.map(([x, y]) => [x, -y]);
-  const [ia, ib] = farthestPair(tpl);
-  const tdx = tpl[ib][0] - tpl[ia][0], tdy = tpl[ib][1] - tpl[ia][1];
-  const tLen = Math.hypot(tdx, tdy);
-  const tAng = Math.atan2(tdy, tdx);
-  const maxTilt = (opt.maxTiltDeg * Math.PI) / 180;
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
-  const grid = new Grid(stars, 0.05);
+// ---------------------------------------------------------------------------
+// Matching one letter
+
+interface Template {
+  char: string;
+  glyph: Glyph;
+  pts: [number, number][]; // screen orientation (y down), cap height 1
+  ia: number; // anchor vertices: the farthest pair
+  ib: number;
+  width: number;
+}
+
+function template(char: string): Template {
+  const glyph = GLYPHS[char];
+  const pts: [number, number][] = glyph.pts.map(([x, y]) => [x, -y]);
+  const [ia, ib] = farthestPair(pts);
+  return { char, glyph, pts, ia, ib, width: Math.max(...glyph.pts.map(([x]) => x)) };
+}
+
+/** Pool of stars at one brightness level, with a spatial index. */
+interface Pool {
+  stars: SkyStar[];
+  grid: Grid;
+}
+
+function makePool(stars: SkyStar[]): Pool {
+  return { stars, grid: new Grid(stars, 0.04) };
+}
+
+/**
+ * Given stars for the two anchor vertices, find stars for the rest.
+ * `accept` sees the implied transform before the (costlier) vertex search.
+ */
+function complete(
+  t: Template, a: SkyStar, b: SkyStar, pool: Pool, opt: MatchOptions,
+  accept: (scale: number, angle: number) => boolean,
+): LetterMatch | null {
+  const tdx = t.pts[t.ib][0] - t.pts[t.ia][0], tdy = t.pts[t.ib][1] - t.pts[t.ia][1];
+  const scale = Math.hypot(b.x - a.x, b.y - a.y) / Math.hypot(tdx, tdy);
+  const angle = wrapAngle(Math.atan2(b.y - a.y, b.x - a.x) - Math.atan2(tdy, tdx));
+  if (scale < opt.minHeight || scale > opt.maxHeight || !accept(scale, angle)) return null;
+
+  const cos = Math.cos(angle) * scale, sin = Math.sin(angle) * scale;
+  const used: SkyStar[] = new Array(t.pts.length);
+  used[t.ia] = a;
+  used[t.ib] = b;
+  const tol = opt.tolerance * scale;
+  for (let k = 0; k < t.pts.length; k++) {
+    if (k === t.ia || k === t.ib) continue;
+    const px = t.pts[k][0] - t.pts[t.ia][0], py = t.pts[k][1] - t.pts[t.ia][1];
+    const qx = a.x + cos * px - sin * py, qy = a.y + sin * px + cos * py;
+    let best: SkyStar | undefined, bestD = tol;
+    for (const s of pool.grid.near(qx, qy, tol)) {
+      const d = Math.hypot(s.x - qx, s.y - qy);
+      if (d <= bestD && !used.includes(s)) { best = s; bestD = d; }
+    }
+    if (!best) return null;
+    used[k] = best;
+  }
+
+  const fit = fitSimilarity(t.pts, used);
+  if (fit.rms > opt.tolerance * 0.75) return null;
+  const meanMag = used.reduce((m, s) => m + s.mag, 0) / used.length;
+  const xs = used.map((s) => s.x), ys = used.map((s) => s.y);
+  const box: LetterMatch["box"] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  return {
+    char: t.char, position: -1, line: 0,
+    stars: used, edges: t.glyph.edges,
+    error: fit.rms, meanMag,
+    height: fit.scale, angle: fit.angle, origin: fit.origin,
+    cx: (box[0] + box[2]) / 2, cy: (box[1] + box[3]) / 2, box,
+    score: fit.rms / opt.tolerance + 0.35 * Math.max(0, meanMag - 2),
+  };
+}
+
+/** Every placement of a letter anywhere in the sky (within size/tilt limits). */
+function searchAnywhere(t: Template, pool: Pool, opt: MatchOptions, maxTilt: number, maxHeight: number): LetterMatch[] {
+  const tLen = Math.hypot(t.pts[t.ib][0] - t.pts[t.ia][0], t.pts[t.ib][1] - t.pts[t.ia][1]);
+  const lim = { ...opt, maxHeight };
   const seen = new Set<string>();
   const out: LetterMatch[] = [];
-
-  for (const a of stars) {
-    for (const b of grid.near(a.x, a.y, opt.maxHeight * tLen)) {
+  for (const a of pool.stars) {
+    for (const b of pool.grid.near(a.x, a.y, maxHeight * tLen)) {
       if (a === b) continue;
-      const sdx = b.x - a.x, sdy = b.y - a.y;
-      const len = Math.hypot(sdx, sdy);
-      const scale = len / tLen;
-      if (scale < opt.minHeight || scale > opt.maxHeight) continue;
-      let tilt = Math.atan2(sdy, sdx) - tAng;
-      tilt = Math.atan2(Math.sin(tilt), Math.cos(tilt));
-      if (Math.abs(tilt) > maxTilt) continue;
-
-      const cos = Math.cos(tilt) * scale, sin = Math.sin(tilt) * scale;
-      const used: SkyStar[] = new Array(tpl.length);
-      used[ia] = a; used[ib] = b;
-      const tolAbs = opt.tolerance * scale;
-      let ok = true;
-      for (let k = 0; k < tpl.length && ok; k++) {
-        if (k === ia || k === ib) continue;
-        const px = tpl[k][0] - tpl[ia][0], py = tpl[k][1] - tpl[ia][1];
-        const qx = a.x + cos * px - sin * py, qy = a.y + sin * px + cos * py;
-        let best: SkyStar | undefined, bestD = tolAbs;
-        for (const s of grid.near(qx, qy, tolAbs)) {
-          const d = Math.hypot(s.x - qx, s.y - qy);
-          if (d <= bestD && !used.includes(s)) { best = s; bestD = d; }
-        }
-        if (best) used[k] = best; else ok = false;
-      }
-      if (!ok) continue;
-
-      const key = used.map((s) => s.id).join(",");
+      const m = complete(t, a, b, pool, lim, (_, angle) => Math.abs(angle) <= maxTilt);
+      if (!m) continue;
+      const key = m.stars.map((s) => s.id).join(",");
       if (seen.has(key)) continue;
       seen.add(key);
-
-      const fit = fitSimilarity(tpl, used);
-      if (fit.rms > opt.tolerance * 0.75 || Math.abs(fit.angle) > maxTilt) continue;
-      const meanMag = used.reduce((m, s) => m + s.mag, 0) / used.length;
-      const xs = used.map((s) => s.x), ys = used.map((s) => s.y);
-      const box: LetterMatch["box"] = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-      out.push({
-        char,
-        position: -1,
-        stars: used,
-        edges: glyph.edges,
-        error: fit.rms,
-        meanMag,
-        height: fit.scale,
-        tiltDeg: (fit.angle * 180) / Math.PI,
-        cx: (box[0] + box[2]) / 2,
-        cy: (box[1] + box[3]) / 2,
-        box,
-        score: fit.rms / opt.tolerance + 0.35 * Math.max(0, meanMag - 2) + 0.3 * Math.abs(fit.angle / maxTilt),
-      });
+      out.push(m);
     }
   }
   return out.sort((p, q) => p.score - q.score).slice(0, 1000);
+}
+
+/** Where the next letter is expected: its origin, size and direction. */
+interface Slot {
+  origin: [number, number];
+  height: number;
+  angle: number;
+  looseness: number; // scales the allowed offset (a new line may start further from its guess)
+}
+
+/** Placements of a letter close to an expected slot, with the cost of deviating from it. */
+function searchSlot(t: Template, slot: Slot, pool: Pool, opt: MatchOptions): { m: LetterMatch; dev: number }[] {
+  const { origin, height: h, angle } = slot;
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  const at = (p: [number, number]) => [origin[0] + h * (cos * p[0] - sin * p[1]), origin[1] + h * (sin * p[0] + cos * p[1])];
+  const [ax, ay] = at(t.pts[t.ia]);
+  const [bx, by] = at(t.pts[t.ib]);
+  const k = slot.looseness;
+  const r = (0.3 + k * Math.max(opt.slotGap[1], opt.slotShift)) * h;
+  const maxBend = opt.maxBendDeg * DEG;
+
+  const out: { m: LetterMatch; dev: number }[] = [];
+  for (const a of pool.grid.near(ax, ay, r)) {
+    if (Math.hypot(a.x - ax, a.y - ay) > r) continue;
+    for (const b of pool.grid.near(bx, by, r)) {
+      if (a === b || Math.hypot(b.x - bx, b.y - by) > r) continue;
+      const m = complete(t, a, b, pool, opt, (scale, ang) =>
+        Math.abs(Math.log(scale / h)) <= Math.log(opt.slotGrow * 1.05) && Math.abs(wrapAngle(ang - angle)) <= maxBend * 1.3);
+      if (!m) continue;
+      // Deviation measured in the slot's own frame, in letter heights.
+      const vx = m.origin[0] - origin[0], vy = m.origin[1] - origin[1];
+      const along = (vx * cos + vy * sin) / h / k;
+      const perp = (-vx * sin + vy * cos) / h / k;
+      const bend = wrapAngle(m.angle - angle);
+      const grow = Math.log(m.height / h);
+      if (along < opt.slotGap[0] || along > opt.slotGap[1] || Math.abs(perp) > opt.slotShift) continue;
+      if (Math.abs(bend) > maxBend || Math.abs(grow) > Math.log(opt.slotGrow)) continue;
+      const dev = 2 * along * along + 6 * perp * perp + 8 * grow * grow + 0.6 * (bend / maxBend) ** 2;
+      out.push({ m, dev });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Layouts
+
+export function normalizeName(name: string): string {
+  return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+}
+
+interface Entry { t: Template; position: number; }
+
+interface State {
+  picks: LetterMatch[];
+  used: Set<number>;
+  cost: number;
+  bend: number; // accumulated turn of the baseline
+}
+
+/** Next slot for letter `i` of a layout, from what has been placed so far. */
+function nextSlot(st: State, lines: Entry[][], line: number, idx: number, opt: MatchOptions): Slot {
+  const prev = st.picks[st.picks.length - 1];
+  const cos = Math.cos(prev.angle), sin = Math.sin(prev.angle);
+  if (idx > 0) {
+    const adv = prev.height * (lines[line][idx - 1].t.width + opt.letterGap);
+    return { origin: [prev.origin[0] + cos * adv, prev.origin[1] + sin * adv], height: prev.height, angle: prev.angle, looseness: 1 };
+  }
+  // First letter of a new line: below the previous line's first letter, centred under it.
+  const first = st.picks.find((p) => p.line === line - 1)!;
+  const width = (l: Entry[]) => l.reduce((w, e) => w + e.t.width, 0) + opt.letterGap * (l.length - 1);
+  const h = first.height, fc = Math.cos(first.angle), fs = Math.sin(first.angle);
+  const shift = ((width(lines[line - 1]) - width(lines[line])) / 2) * h;
+  const down = 1.6 * h;
+  return {
+    origin: [first.origin[0] + fc * shift - fs * down, first.origin[1] + fs * shift + fc * down],
+    height: h,
+    angle: first.angle,
+    looseness: 3,
+  };
+}
+
+function writeLines(lines: Entry[][], pools: Pool[], opt: MatchOptions): State | null {
+  const all = lines.flat();
+  const widthInHeights = Math.max(...lines.map((l) => l.reduce((w, e) => w + e.t.width, 0) + opt.letterGap * (l.length - 1)));
+  const maxHeight = Math.min(opt.maxHeight, opt.maxWordWidth / widthInHeights);
+  if (maxHeight < opt.minHeight) return null;
+
+  let beam: State[] = [];
+  // First letter: anywhere, facing any direction.
+  for (let level = 0; level < pools.length && beam.length === 0; level++) {
+    const cands = searchAnywhere(all[0].t, pools[level], opt, Math.PI, maxHeight);
+    if (cands.length < opt.minCandidates && level < pools.length - 1) continue;
+    beam = cands.slice(0, opt.beamWidth * 2).map((m) => ({
+      picks: [{ ...m, position: all[0].position, line: 0 }],
+      used: new Set(m.stars.map((s) => s.id)),
+      cost: m.score,
+      bend: 0,
+    }));
+  }
+
+  const maxTotal = opt.maxTotalBendDeg * DEG;
+  let line = 0, idx = 0;
+  for (const entry of all.slice(1)) {
+    if (++idx >= lines[line].length) { line++; idx = 0; }
+    let next: State[] = [];
+    for (let level = 0; level < pools.length && next.length === 0; level++) {
+      for (const st of beam) {
+        const slot = nextSlot(st, lines, line, idx, opt);
+        for (const { m, dev } of searchSlot(entry.t, slot, pools[level], opt)) {
+          if (m.stars.some((s) => st.used.has(s.id))) continue;
+          const bend = idx > 0 ? st.bend + wrapAngle(m.angle - slot.angle) : st.bend;
+          if (Math.abs(bend) > maxTotal) continue;
+          const used = new Set(st.used);
+          m.stars.forEach((s) => used.add(s.id));
+          next.push({ picks: [...st.picks, { ...m, position: entry.position, line }], used, cost: st.cost + m.score + dev, bend });
+        }
+      }
+    }
+    if (next.length === 0) return null;
+    // Keep the beam diverse: at most a few states per first-letter placement.
+    next.sort((p, q) => p.cost - q.cost);
+    const perRoot = new Map<string, number>();
+    beam = [];
+    for (const st of next) {
+      const root = st.picks[0].stars.map((s) => s.id).join(",");
+      const n = perRoot.get(root) ?? 0;
+      if (n >= 4) continue;
+      perRoot.set(root, n + 1);
+      beam.push(st);
+      if (beam.length >= opt.beamWidth) break;
+    }
+  }
+  return beam[0] ?? null;
 }
 
 function boxesOverlap(p: LetterMatch["box"], q: LetterMatch["box"], pad: number) {
   return p[0] - pad < q[2] && q[0] - pad < p[2] && p[1] - pad < q[3] && q[1] - pad < p[3];
 }
 
-/** Penalty for how a letter sits next to the one before it (word-like layout). */
-function layoutCost(prev: LetterMatch, cur: LetterMatch): number {
-  const h = (prev.height + cur.height) / 2;
-  const dx = (cur.box[0] - prev.box[2]) / h; // gap between letters, in letter heights
-  const dy = Math.abs(cur.cy - prev.cy) / h;
-  let cost = 0;
-  if (dx < -0.2) cost += 3 + Math.min(-dx, 3); // going backwards
-  else if (dx > 0.8) cost += (dx - 0.8) * 0.8; // drifting apart
-  cost += dy * 0.8;
-  cost += Math.abs(Math.log(cur.height / prev.height)) * 1.5;
-  return cost;
+/** Fallback: each letter wherever it fits best (order shown by numbering instead). */
+function scatter(entries: Entry[], pools: Pool[], opt: MatchOptions): { state: State; missing: NameMatch["missing"] } {
+  const cache = new Map<string, LetterMatch[]>();
+  const candidates = (t: Template, level: number) => {
+    const key = `${t.char}:${level}`;
+    if (!cache.has(key)) cache.set(key, searchAnywhere(t, pools[level], opt, 25 * DEG, opt.maxHeight));
+    return cache.get(key)!;
+  };
+  let beam: State[] = [{ picks: [], used: new Set(), cost: 0, bend: 0 }];
+  const missing: NameMatch["missing"] = [];
+  for (const { t, position } of entries) {
+    let placed = false;
+    for (let level = 0; level < pools.length && !placed; level++) {
+      const cands = candidates(t, level);
+      if (cands.length < opt.minCandidates && level < pools.length - 1) continue;
+      const next: State[] = [];
+      for (const st of beam)
+        for (const c of cands) {
+          if (c.stars.some((s) => st.used.has(s.id))) continue;
+          if (st.picks.some((p) => boxesOverlap(p.box, c.box, 0.25 * Math.min(p.height, c.height)))) continue;
+          const used = new Set(st.used);
+          c.stars.forEach((s) => used.add(s.id));
+          next.push({ picks: [...st.picks, { ...c, position }], used, cost: st.cost + c.score, bend: 0 });
+        }
+      if (next.length) {
+        beam = next.sort((p, q) => p.cost - q.cost).slice(0, opt.beamWidth);
+        placed = true;
+      }
+    }
+    if (!placed) missing.push({ char: t.char, position });
+  }
+  return { state: beam[0], missing };
 }
 
-export function normalizeName(name: string): string {
-  return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+/** Direction the text runs: along the first line, first letter to the end of the last. */
+function readingAngle(letters: LetterMatch[]): number {
+  const first = letters[0];
+  const onLine = letters.filter((l) => l.line === 0);
+  const last = onLine[onLine.length - 1];
+  if (last === first) return first.angle;
+  const w = Math.max(...GLYPHS[last.char].pts.map(([x]) => x)) * last.height;
+  const ex = last.origin[0] + Math.cos(last.angle) * w, ey = last.origin[1] + Math.sin(last.angle) * w;
+  return Math.atan2(ey - first.origin[1], ex - first.origin[0]);
 }
 
 export function matchName(rawName: string, sky: SkyStar[], options: Partial<MatchOptions> = {}): NameMatch {
   const opt = { ...DEFAULT_OPTIONS, ...options };
-  const name = normalizeName(rawName);
+  const entries: Entry[] = [...normalizeName(rawName)]
+    .map((ch, position) => ({ ch, position }))
+    .filter(({ ch }) => GLYPHS[ch]) // spaces, punctuation, unsupported scripts
+    .map(({ ch, position }) => ({ t: template(ch), position }));
+  const empty: NameMatch = { name: rawName, layout: "line", letters: [], missing: [], cost: 0, readingAngle: 0 };
+  if (entries.length === 0) return empty;
+
   const high = sky.filter((s) => s.alt >= opt.minAlt);
+  const pools = opt.magLimits.map((limit) => makePool(high.filter((s) => s.mag <= limit)));
 
-  // Candidates per letter and magnitude level (level i uses stars up to magLimits[i]).
-  const cache = new Map<string, LetterMatch[]>();
-  const candidatesFor = (ch: string, level: number) => {
-    const key = `${ch}:${level}`;
-    if (!cache.has(key)) {
-      const pool = high.filter((s) => s.mag <= opt.magLimits[level]);
-      cache.set(key, letterCandidates(ch, GLYPHS[ch], pool, opt));
-    }
-    return cache.get(key)!;
-  };
+  const perLetter = (s: State) => s.cost / s.picks.length;
+  let best: { state: State; layout: Layout } | null = null;
 
-  interface State { picks: LetterMatch[]; used: Set<number>; cost: number; }
-  let beam: State[] = [{ picks: [], used: new Set(), cost: 0 }];
-  const missing: NameMatch["missing"] = [];
+  const one = writeLines([entries], pools, opt);
+  if (one) best = { state: one, layout: "line" };
+  if (entries.length >= opt.minWrapLength) {
+    const split = Math.ceil(entries.length / 2);
+    const two = writeLines([entries.slice(0, split), entries.slice(split)], pools, opt);
+    // One line reads best; wrap only when it is clearly better.
+    if (two && (!one || perLetter(two) + 0.5 < perLetter(one))) best = { state: two, layout: "two-lines" };
+  }
 
-  const extend = (cands: LetterMatch[], position: number): State[] => {
-    const next: State[] = [];
-    for (const st of beam) {
-      const prev = st.picks[st.picks.length - 1];
-      for (const c of cands) {
-        if (c.stars.some((s) => st.used.has(s.id))) continue;
-        if (st.picks.some((p) => boxesOverlap(p.box, c.box, 0.25 * Math.min(p.height, c.height)))) continue;
-        const cost = st.cost + c.score + (prev ? layoutCost(prev, c) : 0);
-        const used = new Set(st.used);
-        c.stars.forEach((s) => used.add(s.id));
-        next.push({ picks: [...st.picks, { ...c, position }], used, cost });
-      }
-    }
-    return next.sort((p, q) => p.cost - q.cost).slice(0, opt.beamWidth);
-  };
-
-  [...name].forEach((ch, position) => {
-    if (!GLYPHS[ch]) return; // spaces, punctuation, unsupported scripts
-    // Prefer bright stars; reach for fainter ones only when the letter can't be placed.
-    for (let level = 0; level < opt.magLimits.length; level++) {
-      const cands = candidatesFor(ch, level);
-      if (cands.length < opt.minCandidates && level < opt.magLimits.length - 1) continue;
-      const next = extend(cands, position);
-      if (next.length) { beam = next; return; }
-    }
-    missing.push({ char: ch, position });
-  });
-
-  return { name: rawName, letters: beam[0].picks, missing, cost: beam[0].cost };
+  if (best) {
+    const letters = best.state.picks;
+    return { name: rawName, layout: best.layout, letters, missing: [], cost: best.state.cost, readingAngle: readingAngle(letters) };
+  }
+  if (!opt.scatterFallback) {
+    return { ...empty, layout: "scattered", missing: entries.map(({ t, position }) => ({ char: t.char, position })) };
+  }
+  const { state, missing } = scatter(entries, pools, opt);
+  return { name: rawName, layout: "scattered", letters: state.picks, missing, cost: state.cost, readingAngle: 0 };
 }

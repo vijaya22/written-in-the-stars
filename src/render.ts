@@ -52,6 +52,9 @@ export interface RenderState {
 }
 
 export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progress }: RenderState) {
+  // Turn the chart so the name reads left to right (the sky has no "up").
+  const rot = -(match?.readingAngle ?? 0);
+  const rc = Math.cos(rot), rs = Math.sin(rot);
   const dpr = window.devicePixelRatio || 1;
   const size = canvas.clientWidth;
   if (canvas.width !== size * dpr) {
@@ -64,7 +67,7 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
 
   const R = size / 2 - 22;
   const cx = size / 2, cy = size / 2;
-  const px = (s: { x: number; y: number }) => [cx + s.x * R, cy + s.y * R] as const;
+  const px = (s: { x: number; y: number }) => [cx + (s.x * rc - s.y * rs) * R, cy + (s.x * rs + s.y * rc) * R] as const;
   const k = size / 640; // scale star sizes with the canvas
 
   // Sky dome
@@ -84,10 +87,11 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
   ctx.font = `${Math.round(12 * Math.max(1, k))}px system-ui, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("N", cx, cy - R - 11);
-  ctx.fillText("S", cx, cy + R + 11);
-  ctx.fillText("E", cx - R - 11, cy);
-  ctx.fillText("W", cx + R + 11, cy);
+  const edge = (R + 11) / R;
+  for (const [label, x, y] of [["N", 0, -1], ["S", 0, 1], ["E", -1, 0], ["W", 1, 0]] as const) {
+    const [lx, ly] = px({ x: x * edge, y: y * edge });
+    ctx.fillText(label, lx, ly);
+  }
 
   // Stars (faintest first so bright ones sit on top)
   ctx.save();
@@ -113,7 +117,7 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
     let r: number;
     if (b.kind === "moon") {
       r = 11 * k;
-      drawMoon(ctx, x, y, r, b.illuminated ?? 1, b.litAngle ?? 0);
+      drawMoon(ctx, x, y, r, b.illuminated ?? 1, (b.litAngle ?? 0) + rot);
     } else {
       r = Math.max(2.2, starRadius(b.mag)) * k;
       ctx.fillStyle = b.color;
@@ -132,6 +136,31 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
   ctx.restore();
 
   if (!match) return;
+
+  // Scattered letters: a faint thread and numbers carry the reading order.
+  if (match.layout === "scattered" && match.letters.length > 1) {
+    const centre = (l: (typeof match.letters)[number]) => px({ x: l.cx, y: l.cy });
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, progress * 1.5);
+    ctx.strokeStyle = "rgba(255, 214, 140, 0.3)";
+    ctx.setLineDash([2 * k, 6 * k]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    match.letters.forEach((l, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, ...centre(l)));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "rgba(255, 214, 140, 0.9)";
+    ctx.font = `600 ${Math.round(12 * Math.max(1, k))}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    match.letters.forEach((l, i) => {
+      // Put the number just above the letter, as the chart is shown.
+      const pts = l.stars.map(px);
+      const top = Math.min(...pts.map(([, y]) => y));
+      const mid = pts.reduce((m, [x]) => m + x, 0) / pts.length;
+      ctx.fillText(String(i + 1), mid, top - 12 * k);
+    });
+    ctx.restore();
+  }
 
   // Letters: strokes draw in one after another
   const n = match.letters.length;

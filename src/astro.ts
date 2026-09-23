@@ -39,6 +39,11 @@ function horizontal(ra: number, dec: number, lstDeg: number, latDeg: number) {
   return { alt, az: (az + 360) % 360 };
 }
 
+/** Altitude (degrees) of a J2000 RA/Dec for an observer. */
+export function altitude(ra: number, dec: number, date: Date, latDeg: number, lonDeg: number): number {
+  return horizontal(ra, dec, localSiderealTime(date, lonDeg), latDeg).alt;
+}
+
 /** Stereographic chart: zenith at the origin, horizon at r = 1. Looking up, east is on the left. */
 function chartXY(alt: number, az: number) {
   const r = Math.tan(((90 - alt) / 2) * RAD);

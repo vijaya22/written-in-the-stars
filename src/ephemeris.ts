@@ -130,6 +130,13 @@ function moonVector(date: Date): Vec {
   return [r * Math.cos(B) * Math.cos(L), r * Math.cos(B) * Math.sin(L), r * Math.sin(B)];
 }
 
+/** The Sun's position, J2000 RA (hours) / Dec (degrees). */
+export function sunPosition(date: Date): { ra: number; dec: number } {
+  const earth = heliocentric("EMBary", (julianDate(date) - 2451545) / 36525);
+  const [ra, dec] = toEquatorial([-earth[0], -earth[1], -earth[2]]);
+  return { ra, dec };
+}
+
 export function solarSystem(date: Date): Body[] {
   const T = (julianDate(date) - 2451545) / 36525;
   const earth = heliocentric("EMBary", T);
