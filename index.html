@@ -16,12 +16,15 @@
       <form id="form">
         <label class="field grow">
           <span>Name</span>
-          <input id="name" autocomplete="off" maxlength="16" placeholder="Type a name" />
+          <input id="name" autocomplete="off" maxlength="20" placeholder="Type a name" aria-describedby="name-note" />
+          <small id="name-note" class="note" aria-live="polite"></small>
         </label>
-        <label class="field">
-          <span>Place</span>
-          <select id="place"></select>
-        </label>
+        <div class="field place">
+          <label for="place">Place</label>
+          <input id="place" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="place-list"
+                 autocomplete="off" spellcheck="false" placeholder="Search for a city" />
+          <ul id="place-list" role="listbox" aria-label="Matching cities" hidden></ul>
+        </div>
         <label class="field">
           <span>Date &amp; time <small>(local time at that place)</small></span>
           <input id="when" type="datetime-local" />
@@ -34,13 +37,14 @@
       <p id="status" role="status"></p>
 
       <figure>
-        <canvas id="sky"></canvas>
+        <canvas id="sky" role="img" aria-describedby="caption legend"></canvas>
         <figcaption id="caption"></figcaption>
       </figure>
       <ol id="legend"></ol>
 
       <footer>
-        Star positions from the <a href="https://github.com/astronexus/HYG-Database">HYG database</a> (CC BY-SA 4.0).
+        Star positions from the <a href="https://github.com/astronexus/HYG-Database">HYG database</a> (CC BY-SA 4.0);
+        cities from <a href="https://www.geonames.org">GeoNames</a> (CC BY 4.0).
         The chart is the whole sky overhead, as when you lie back and look up. It is turned so your name reads left to right;
         the N/E/S/W marks show the real directions.
       </footer>

@@ -1,49 +1,51 @@
 import "./style.css";
 import { visibleBodies, visibleSky, type CatalogStar, type SkyBody, type SkyStar } from "./astro.ts";
 import { solarSystem } from "./ephemeris.ts";
-import { matchName, type NameMatch } from "./matcher.ts";
-import { darkTimes } from "./night.ts";
-import type { NightRequest, NightStep } from "./night.worker.ts";
+import { normalizeName, unsupportedChars, type NameMatch } from "./matcher.ts";
+import { GLYPHS } from "./glyphs.ts";
+import type { NightResult } from "./night.ts";
+import { createPlacePicker, placeLabel, type ApiPlace } from "./place-picker.ts";
 import { renderSky } from "./render.ts";
 
 type Place = [label: string, lat: number, lon: number, timeZone: string];
 
-const PLACES: Place[] = [
-  ["Bengaluru", 12.97, 77.59, "Asia/Kolkata"],
-  ["Mumbai", 19.08, 72.88, "Asia/Kolkata"],
-  ["Delhi", 28.61, 77.21, "Asia/Kolkata"],
-  ["London", 51.51, -0.13, "Europe/London"],
-  ["New York", 40.71, -74.01, "America/New_York"],
-  ["San Francisco", 37.77, -122.42, "America/Los_Angeles"],
-  ["São Paulo", -23.55, -46.63, "America/Sao_Paulo"],
-  ["Lagos", 6.52, 3.38, "Africa/Lagos"],
-  ["Nairobi", -1.29, 36.82, "Africa/Nairobi"],
-  ["Cairo", 30.04, 31.24, "Africa/Cairo"],
-  ["Tokyo", 35.68, 139.69, "Asia/Tokyo"],
-  ["Sydney", -33.87, 151.21, "Australia/Sydney"],
-  ["Reykjavík", 64.15, -21.94, "Atlantic/Reykjavik"],
-];
+// Used only if the server can't suggest a starting city.
+const FALLBACK_PLACE: Place = ["London, United Kingdom", 51.509, -0.126, "Europe/London"];
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const form = $<HTMLFormElement>("#form");
 const nameInput = $<HTMLInputElement>("#name");
-const placeSelect = $<HTMLSelectElement>("#place");
+const placeInput = $<HTMLInputElement>("#place");
+const placeList = $<HTMLUListElement>("#place-list");
 const whenInput = $<HTMLInputElement>("#when");
 const locateBtn = $<HTMLButtonElement>("#locate");
 const canvas = $<HTMLCanvasElement>("#sky");
 const caption = $<HTMLElement>("#caption");
 const legend = $<HTMLElement>("#legend");
 const status = $<HTMLElement>("#status");
+const nameNote = $<HTMLElement>("#name-note");
+
+/** The name to draw, or null (with a note) when nothing in it can be drawn. */
+function drawableName(): string | null {
+  const name = nameInput.value.trim();
+  const skipped = unsupportedChars(name);
+  const drawable = [...normalizeName(name)].some((ch) => GLYPHS[ch]);
+  if (name && !drawable) {
+    nameNote.textContent = "Only the letters A–Z can be drawn in the stars for now.";
+    return null;
+  }
+  nameNote.textContent = skipped.length
+    ? `${skipped.map((c) => `“${c}”`).join(" ")} can’t be drawn in the stars yet, so ${skipped.length > 1 ? "they’re" : "it’s"} left out.`
+    : "";
+  return name || null;
+}
 
 let catalog: CatalogStar[] = [];
 let sky: SkyStar[] = [];
 let bodies: SkyBody[] = [];
 let match: NameMatch | null = null;
 let progress = 1;
-let custom: [number, number] | null = null;
-let lastPlace: Place;
-
-for (const [i, [label]] of PLACES.entries()) placeSelect.add(new Option(label, String(i)));
+let place: Place = FALLBACK_PLACE;
 
 const BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -72,9 +74,19 @@ function dateToWallTime(date: Date, timeZone: string): string {
 }
 
 function currentPlace(): Place {
-  if (placeSelect.value === "here" && custom) return ["your location", custom[0], custom[1], BROWSER_TZ];
-  return PLACES[Number(placeSelect.value)];
+  return place;
 }
+
+/** Switch place, keeping the same moment (shown in the new place's local time), then search that night. */
+function moveTo(next: Place) {
+  const instant = whenInput.value ? wallTimeToDate(whenInput.value, place[3]) : new Date();
+  place = next;
+  whenInput.value = dateToWallTime(instant, place[3]);
+  findBestTime();
+}
+
+const fromApi = (p: ApiPlace): Place => [placeLabel(p), p.lat, p.lon, p.timeZone];
+const picker = createPlacePicker(placeInput, placeList, (p) => moveTo(fromApi(p)));
 
 function draw() {
   renderSky(canvas, { sky, bodies, match, progress });
@@ -93,29 +105,29 @@ function lookDirection(m: NameMatch): string {
       z += Math.sin(alt);
     }
   const alt = (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI;
-  if (alt > 75) return "straight up";
+  if (alt > 75) return "look straight up";
   const az = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
   return `face ${COMPASS[Math.round(az / 45) % 8]}, about ${Math.round(alt / 5) * 5}° up`;
 }
 
-/**
- * Show the sky at `when` with `found` letters. `found === undefined` matches
- * the name at that moment; `null` shows the sky alone (e.g. while searching).
- */
-function show(when: Date, found: NameMatch | null | undefined, headline: string | null) {
+/** Show the sky at `when`, with the name's letters if `found`. */
+function show(when: Date, found: NameMatch | null, headline: string | null) {
   const [place, lat, lon, timeZone] = currentPlace();
-  lastPlace = currentPlace();
   whenInput.value = dateToWallTime(when, timeZone);
   sky = visibleSky(catalog, when, lat, lon);
   // Same naked-eye limit as the star catalog: Uranus sometimes makes it, Neptune never does.
   bodies = visibleBodies(solarSystem(when), when, lat, lon).filter((b) => b.mag <= 6);
   const name = nameInput.value.trim();
-  match = found !== undefined ? found : name ? matchName(name, sky) : null;
+  match = found;
 
   const dateText = when.toLocaleString(undefined, { dateStyle: "long", timeStyle: "short", timeZone });
   caption.textContent = match?.letters.length
     ? `${headline ?? `“${name}” over ${place}, ${dateText}`} · ${lookDirection(match)}`
     : `The sky over ${place}, ${dateText}`;
+
+  canvas.setAttribute("aria-label", match?.letters.length
+    ? `Star chart: “${name}” written in the stars over ${place}. The stars in each letter are listed below.`
+    : `Star chart of the sky over ${place}, ${dateText}.`);
 
   legend.replaceChildren();
   if (match) {
@@ -169,46 +181,76 @@ function show(when: Date, found: NameMatch | null | undefined, headline: string 
   requestAnimationFrame(tick);
 }
 
-/** The exact moment in the date/time box. */
-function showExact() {
-  stopSearch();
-  status.textContent = "";
-  const timeZone = currentPlace()[3];
-  if (!whenInput.value) whenInput.value = dateToWallTime(new Date(), timeZone);
-  show(wallTimeToDate(whenInput.value, timeZone), undefined, null);
-}
-
-// Night search: the night is split across a few workers running in parallel.
-let workers: Worker[] = [];
-let searchId = 0;
+// Matching runs on the server; the page only draws.
+let inflight: AbortController | null = null;
 
 function stopSearch() {
-  workers.forEach((w) => w.terminate());
-  workers = [];
-  searchId++;
+  inflight?.abort();
+  inflight = null;
 }
 
-/** Try the name at each of `times` on the worker pool. */
-function tryTimes(base: Omit<NightRequest, "times">, times: number[], onStep: () => void): Promise<NightStep[]> {
-  return new Promise((resolve, reject) => {
-    const results: NightStep[] = [];
-    workers.forEach((w, i) => {
-      w.onmessage = (e: MessageEvent<NightStep>) => {
-        results.push(e.data);
-        onStep();
-        if (results.length === times.length) resolve(results);
-      };
-      w.onerror = (e) => reject(new Error(e.message || "worker error"));
-      w.postMessage({ ...base, times: times.filter((_, j) => j % workers.length === i) } satisfies NightRequest);
-    });
-  });
+async function api<T>(path: string, query: Record<string, string | number>, signal: AbortSignal): Promise<T> {
+  const qs = new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]));
+  const res = await fetch(`/api/${path}?${qs}`, { signal });
+  // Anything but JSON (e.g. the site's own HTML) means the request never reached the API server.
+  if (!res.headers.get("content-type")?.includes("application/json")) {
+    throw new Error("the API server isn’t reachable");
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `server error ${res.status}`);
+  }
+  return res.json();
 }
 
-const best = (steps: NightStep[]) => steps.reduce((a, b) => (b.rank < a.rank ? b : a));
+/** Runs `work` as the current request, replacing any earlier one. Handles cancel and errors. */
+async function request(work: (signal: AbortSignal) => Promise<void>, onError: (message: string) => void) {
+  stopSearch();
+  const controller = (inflight = new AbortController());
+  try {
+    await work(controller.signal);
+  } catch (err) {
+    if (controller.signal.aborted) return;
+    onError((err as Error).message);
+  } finally {
+    if (inflight === controller) inflight = null;
+  }
+}
+
+/** On small screens the chart starts below the form; bring it into view once there's a result. */
+function revealChart() {
+  const fig = canvas.parentElement!;
+  if (fig.getBoundingClientRect().top > window.innerHeight * 0.6) {
+    fig.scrollIntoView({ behavior: stillFrame ? "auto" : "smooth", block: "start" });
+  }
+}
+
+/** The exact moment in the date/time box. */
+function showExact() {
+  const [, lat, lon, timeZone] = currentPlace();
+  if (!whenInput.value) whenInput.value = dateToWallTime(new Date(), timeZone);
+  const when = wallTimeToDate(whenInput.value, timeZone);
+  const name = drawableName();
+  stopSearch();
+  show(when, null, null);
+  if (!name) {
+    status.textContent = "";
+    return;
+  }
+  status.textContent = "Finding the name in this sky…";
+  request(
+    async (signal) => {
+      const { match: found } = await api<{ match: NameMatch }>("match", { name, lat, lon, time: when.getTime() }, signal);
+      status.textContent = "";
+      show(when, found, null);
+    },
+    (message) => (status.textContent = `Couldn’t reach the server (${message}). Showing the sky without the name.`),
+  );
+}
 
 /** Search the night that the date/time box falls in, from dusk to dawn. */
-async function findBestTime() {
-  const name = nameInput.value.trim();
+function findBestTime() {
+  const name = drawableName();
   if (!name) return showExact();
   const [place, lat, lon, timeZone] = currentPlace();
   if (!whenInput.value) whenInput.value = dateToWallTime(new Date(), timeZone);
@@ -219,66 +261,33 @@ async function findBestTime() {
   const from = wallTimeToDate(`${day}T12:00`, timeZone);
 
   stopSearch();
-  const id = searchId;
   show(wallTimeToDate(whenInput.value, timeZone), null, null); // the sky, while we search
-
-  // Every 30 minutes through the dark hours, then a closer look around the best one.
-  const dark = darkTimes(from, lat, lon, 30);
-  if (dark.length === 0) {
-    status.textContent = `It doesn’t get dark enough over ${place} that night for the stars to show. Showing the chosen time instead.`;
-    show(wallTimeToDate(whenInput.value, timeZone), undefined, null);
-    return;
-  }
-  const count = Math.max(1, Math.min(dark.length, (navigator.hardwareConcurrency || 4) - 1, 6));
-  for (let i = 0; i < count; i++) workers.push(new Worker(new URL("./night.worker.ts", import.meta.url), { type: "module" }));
-
-  const base = { catalog, name, lat, lon };
-  const first = dark[0].date.getTime(), last = dark[dark.length - 1].date.getTime();
-  let done = 0;
-  const total = dark.length + 4;
-  const onStep = () => (status.textContent = `Searching the night sky over ${place}… ${Math.round((100 * ++done) / total)}%`);
-  onStep();
-  done = 0;
-
-  let pick: NightStep | null = null;
-  try {
-    const coarse = best(await tryTimes(base, dark.map((t) => t.date.getTime()), onStep));
-    if (id !== searchId) return;
-    if (coarse.rank < Infinity) {
-      const near = [-20, -10, 10, 20].map((m) => coarse.time + m * 60000).filter((t) => t >= first && t <= last);
-      pick = near.length ? best([coarse, ...(await tryTimes(base, near, onStep))]) : coarse;
-    }
-  } catch (err) {
-    if (id !== searchId) return;
-    stopSearch();
-    status.textContent = `The search failed (${(err as Error).message}). Showing the chosen time instead.`;
-    show(wallTimeToDate(whenInput.value, timeZone), undefined, null);
-    return;
-  }
-  if (id !== searchId) return;
-  stopSearch();
-
-  if (!pick) {
-    // Nothing fits in order all night: numbered letters at the darkest moment.
-    const darkest = dark.reduce((a, b) => (b.sunAlt < a.sunAlt ? b : a)).date;
-    status.textContent = "Tonight’s sky can’t spell this name in order, so the letters are numbered.";
-    show(darkest, undefined, null);
-    return;
-  }
-  const when = new Date(pick.time);
-  const time = when.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone });
-  status.textContent = "Change the time to see the sky at any other moment.";
-  show(when, pick.match, `“${name}” is clearest ${time} over ${place}`);
+  status.textContent = `Searching the night sky over ${place}…`;
+  request(
+    async (signal) => {
+      const result = await api<NightResult>("night", { name, lat, lon, from: from.getTime() }, signal);
+      if (result.status === "no-night") {
+        status.textContent = `It doesn’t get dark enough over ${place} that night for the stars to show.`;
+        return;
+      }
+      const when = new Date(result.time);
+      if (result.status === "scattered") {
+        status.textContent = "Tonight’s sky can’t spell this name in order, so the letters are numbered.";
+        show(when, result.match, null);
+        revealChart();
+        return;
+      }
+      const time = when.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone });
+      status.textContent = "Change the time to see the sky at any other moment.";
+      show(when, result.match, `“${name}” is clearest ${time} over ${place}`);
+      revealChart();
+    },
+    (message) => (status.textContent = `The search failed (${message}). Please try again.`),
+  );
 }
 
 form.addEventListener("submit", (e) => {
   e.preventDefault();
-  findBestTime();
-});
-placeSelect.addEventListener("change", () => {
-  // Keep the same instant, shown in the new place's local time, then search that night.
-  const instant = wallTimeToDate(whenInput.value, lastPlace[3]);
-  whenInput.value = dateToWallTime(instant, currentPlace()[3]);
   findBestTime();
 });
 whenInput.addEventListener("change", showExact);
@@ -286,11 +295,19 @@ window.addEventListener("resize", draw);
 
 locateBtn.addEventListener("click", () => {
   navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      custom = [pos.coords.latitude, pos.coords.longitude];
-      if (!placeSelect.querySelector('option[value="here"]')) placeSelect.add(new Option("My location", "here"), 0);
-      placeSelect.value = "here";
-      findBestTime();
+    async (pos) => {
+      const { latitude: lat, longitude: lon } = pos.coords;
+      // The nearest listed city gives the time zone (and a friendly label).
+      let timeZone = BROWSER_TZ, label = "your location";
+      try {
+        const { place: near } = await (await fetch(`/api/places/near?lat=${lat}&lon=${lon}`)).json();
+        timeZone = near.timeZone;
+        label = `your location (near ${near.name})`;
+      } catch {
+        // keep the browser's time zone
+      }
+      picker.setLabel("My location");
+      moveTo([label, lat, lon, timeZone]);
     },
     () => (locateBtn.textContent = "Location unavailable"),
   );
@@ -299,17 +316,32 @@ locateBtn.addEventListener("click", () => {
 const params = new URLSearchParams(window.location.search);
 const stillFrame = params.has("still") || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 if (params.get("name")) nameInput.value = params.get("name")!;
-if (params.get("place")) {
-  const i = PLACES.findIndex(([p]) => p.toLowerCase() === params.get("place")!.toLowerCase());
-  if (i >= 0) placeSelect.value = String(i);
-}
 if (params.get("when")) whenInput.value = params.get("when")!;
 
-fetch(`${import.meta.env.BASE_URL}stars.json`)
-  .then((r) => r.json())
-  .then((data: CatalogStar[]) => {
-    catalog = data;
-    // A link with an exact time shows that moment; otherwise find the best time tonight.
-    if (params.get("when")) showExact();
-    else findBestTime();
-  });
+/** Starting place: ?place= from a link, else the biggest city in the visitor's time zone. */
+async function startingPlace(): Promise<Place> {
+  try {
+    const q = params.get("place");
+    if (q) {
+      const { places } = await (await fetch(`/api/places?q=${encodeURIComponent(q)}`)).json();
+      if (places?.length) return fromApi(places[0]);
+    }
+    const res = await fetch(`/api/places/default?tz=${encodeURIComponent(BROWSER_TZ)}`);
+    if (res.ok) return fromApi((await res.json()).place);
+  } catch {
+    // server unreachable: fall through
+  }
+  return FALLBACK_PLACE;
+}
+
+Promise.all([
+  fetch(`${import.meta.env.BASE_URL}stars.json`).then((r) => r.json() as Promise<CatalogStar[]>),
+  startingPlace(),
+]).then(([data, start]) => {
+  catalog = data;
+  place = start;
+  picker.setLabel(start[0]);
+  // A link with an exact time shows that moment; otherwise find the best time tonight.
+  if (params.get("when")) showExact();
+  else findBestTime();
+});

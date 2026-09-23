@@ -109,9 +109,22 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
   }
   ctx.globalAlpha = 1;
 
-  // Moon and planets, labelled so they can be told apart from stars
-  ctx.font = `${Math.round(11 * Math.max(1, k))}px system-ui, sans-serif`;
-  ctx.textAlign = "left";
+  // Moon and planets, labelled so they can be told apart from stars.
+  // A label moves around its dot to stay off the letters, or is left out.
+  const letterPts = (match?.letters ?? []).flatMap((l) => l.stars.map(px));
+  const labelFont = Math.round(11 * Math.max(1, k));
+  ctx.font = `${labelFont}px system-ui, sans-serif`;
+  const labelSpot = (x: number, y: number, r: number, text: string): [number, number, CanvasTextAlign] | null => {
+    const w = ctx.measureText(text).width, h = labelFont, pad = 10 * k, gap = r + 5 * k;
+    const spots: [number, number, CanvasTextAlign][] = [
+      [x + gap, y, "left"], [x - gap, y, "right"], [x, y - gap - h / 2, "center"], [x, y + gap + h / 2, "center"],
+    ];
+    return spots.find(([lx, ly, align]) => {
+      const left = align === "left" ? lx : align === "right" ? lx - w : lx - w / 2;
+      if (left < 2 || left + w > size - 2 || ly - h / 2 < 2 || ly + h / 2 > size - 2) return false; // off the canvas
+      return !letterPts.some(([px_, py_]) => px_ > left - pad && px_ < left + w + pad && py_ > ly - h / 2 - pad && py_ < ly + h / 2 + pad);
+    }) ?? null;
+  };
   for (const b of bodies) {
     const [x, y] = px(b);
     let r: number;
@@ -130,8 +143,12 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
       ctx.arc(x, y, r + 3 * k, 0, Math.PI * 2);
       ctx.stroke();
     }
-    ctx.fillStyle = "rgba(200, 210, 240, 0.75)";
-    ctx.fillText(b.name, x + r + 5 * k, y);
+    const spot = labelSpot(x, y, r, b.name);
+    if (spot) {
+      ctx.fillStyle = "rgba(200, 210, 240, 0.75)";
+      ctx.textAlign = spot[2];
+      ctx.fillText(b.name, spot[0], spot[1]);
+    }
   }
   ctx.restore();
 

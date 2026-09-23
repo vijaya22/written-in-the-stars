@@ -108,14 +108,22 @@ class Grid {
   private key(ix: number, iy: number) {
     return (ix + 1000) * 4000 + (iy + 1000);
   }
-  *near(x: number, y: number, r: number): Generator<SkyStar> {
+  /** Stars within distance r of (x, y). (A plain array: this is the hottest loop.) */
+  near(x: number, y: number, r: number): SkyStar[] {
+    const out: SkyStar[] = [];
+    const r2 = r * r;
     const x0 = Math.floor((x - r) / this.size), x1 = Math.floor((x + r) / this.size);
     const y0 = Math.floor((y - r) / this.size), y1 = Math.floor((y + r) / this.size);
     for (let ix = x0; ix <= x1; ix++)
       for (let iy = y0; iy <= y1; iy++) {
         const cell = this.cells.get(this.key(ix, iy));
-        if (cell) yield* cell;
+        if (!cell) continue;
+        for (const s of cell) {
+          const dx = s.x - x, dy = s.y - y;
+          if (dx * dx + dy * dy <= r2) out.push(s);
+        }
       }
+    return out;
   }
 }
 
@@ -160,7 +168,7 @@ function farthestPair(pts: [number, number][]): [number, number] {
   return best;
 }
 
-const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+const wrapAngle = (a: number) => a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
 
 type Pt = [number, number];
 
@@ -240,12 +248,14 @@ function complete(
   t: Template, a: SkyStar, b: SkyStar, pool: Pool, opt: MatchOptions,
   accept: (scale: number, angle: number) => boolean,
 ): LetterMatch | null {
+  // Transform = (star vector) / (template vector) as complex numbers: scale·cos + i·scale·sin.
   const tdx = t.pts[t.ib][0] - t.pts[t.ia][0], tdy = t.pts[t.ib][1] - t.pts[t.ia][1];
-  const scale = Math.hypot(b.x - a.x, b.y - a.y) / Math.hypot(tdx, tdy);
-  const angle = wrapAngle(Math.atan2(b.y - a.y, b.x - a.x) - Math.atan2(tdy, tdx));
-  if (scale < opt.minHeight || scale > opt.maxHeight || !accept(scale, angle)) return null;
+  const vx = b.x - a.x, vy = b.y - a.y;
+  const tl2 = tdx * tdx + tdy * tdy;
+  const cos = (vx * tdx + vy * tdy) / tl2, sin = (vy * tdx - vx * tdy) / tl2;
+  const scale = Math.hypot(cos, sin);
+  if (scale < opt.minHeight || scale > opt.maxHeight || !accept(scale, Math.atan2(sin, cos))) return null;
 
-  const cos = Math.cos(angle) * scale, sin = Math.sin(angle) * scale;
   const used: SkyStar[] = new Array(t.pts.length);
   used[t.ia] = a;
   used[t.ib] = b;
@@ -283,11 +293,13 @@ function complete(
 function searchAnywhere(t: Template, pool: Pool, opt: MatchOptions, maxTilt: number, maxHeight: number): LetterMatch[] {
   const tLen = Math.hypot(t.pts[t.ib][0] - t.pts[t.ia][0], t.pts[t.ib][1] - t.pts[t.ia][1]);
   const lim = { ...opt, maxHeight };
+  const minLen2 = (opt.minHeight * tLen) ** 2;
   const seen = new Set<string>();
   const out: LetterMatch[] = [];
   for (const a of pool.stars) {
     for (const b of pool.grid.near(a.x, a.y, maxHeight * tLen)) {
-      if (a === b) continue;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      if (dx * dx + dy * dy < minLen2) continue; // also skips a === b
       const m = complete(t, a, b, pool, lim, (_, angle) => Math.abs(angle) <= maxTilt);
       if (!m) continue;
       const key = m.stars.map((s) => s.id).join(",");
@@ -319,10 +331,10 @@ function searchSlot(t: Template, slot: Slot, pool: Pool, opt: MatchOptions): { m
   const maxBend = opt.maxBendDeg * DEG;
 
   const out: { m: LetterMatch; dev: number }[] = [];
+  const nearB = pool.grid.near(bx, by, r);
   for (const a of pool.grid.near(ax, ay, r)) {
-    if (Math.hypot(a.x - ax, a.y - ay) > r) continue;
-    for (const b of pool.grid.near(bx, by, r)) {
-      if (a === b || Math.hypot(b.x - bx, b.y - by) > r) continue;
+    for (const b of nearB) {
+      if (a === b) continue;
       const m = complete(t, a, b, pool, opt, (scale, ang) =>
         Math.abs(Math.log(scale / h)) <= Math.log(opt.slotGrow * 1.05) && Math.abs(wrapAngle(ang - angle)) <= maxBend * 1.3);
       if (!m) continue;
@@ -344,11 +356,35 @@ function searchSlot(t: Template, slot: Slot, pool: Pool, opt: MatchOptions): { m
 // ---------------------------------------------------------------------------
 // Layouts
 
+// Letters that don't come apart into A–Z + accent marks.
+const SPECIAL: Record<string, string> = { ß: "SS", ẞ: "SS", Æ: "AE", Œ: "OE", Ø: "O", Ł: "L", Đ: "D", Þ: "TH", Ð: "D", Ħ: "H" };
+
+// Name punctuation: hyphens and dots separate parts like a space; apostrophes just drop out.
+const WORD_BREAK = /[\s\-‐–.]/;
+const SILENT = /['’`]/;
+
+/** Upper-case A–Z form: accents dropped (É → E), special letters spelled out (ß → SS). */
 export function normalizeName(name: string): string {
-  return name.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase();
+  return [...name.toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")].map((ch) => SPECIAL[ch] ?? ch).join("");
 }
 
-interface Entry { t: Template; position: number; }
+/** Characters in a name that can't be drawn (beyond A–Z and name punctuation), each listed once. */
+export function unsupportedChars(name: string): string[] {
+  return [...new Set([...normalizeName(name)].filter((ch) => !GLYPHS[ch] && !WORD_BREAK.test(ch) && !SILENT.test(ch)))];
+}
+
+interface Entry {
+  t: Template;
+  position: number;
+  space: boolean; // a word break comes before this letter
+}
+
+const WORD_SPACE = 0.6; // extra room at a space, in letter heights
+
+/** Width of a line of letters, in letter heights. */
+function lineWidth(l: Entry[], opt: MatchOptions): number {
+  return l.reduce((w, e, i) => w + e.t.width + (i > 0 && e.space ? WORD_SPACE : 0), 0) + opt.letterGap * (l.length - 1);
+}
 
 interface State {
   picks: LetterMatch[];
@@ -362,12 +398,12 @@ function nextSlot(st: State, lines: Entry[][], line: number, idx: number, opt: M
   const prev = st.picks[st.picks.length - 1];
   const cos = Math.cos(prev.angle), sin = Math.sin(prev.angle);
   if (idx > 0) {
-    const adv = prev.height * (lines[line][idx - 1].t.width + opt.letterGap);
+    const adv = prev.height * (lines[line][idx - 1].t.width + opt.letterGap + (lines[line][idx].space ? WORD_SPACE : 0));
     return { origin: [prev.origin[0] + cos * adv, prev.origin[1] + sin * adv], height: prev.height, angle: prev.angle, looseness: 1 };
   }
   // First letter of a new line: below the previous line's first letter, centred under it.
   const first = st.picks.find((p) => p.line === line - 1)!;
-  const width = (l: Entry[]) => l.reduce((w, e) => w + e.t.width, 0) + opt.letterGap * (l.length - 1);
+  const width = (l: Entry[]) => lineWidth(l, opt);
   const h = first.height, fc = Math.cos(first.angle), fs = Math.sin(first.angle);
   const shift = ((width(lines[line - 1]) - width(lines[line])) / 2) * h;
   const down = 1.6 * h;
@@ -381,7 +417,7 @@ function nextSlot(st: State, lines: Entry[][], line: number, idx: number, opt: M
 
 function writeLines(lines: Entry[][], pools: Pool[], opt: MatchOptions): State | null {
   const all = lines.flat();
-  const widthInHeights = Math.max(...lines.map((l) => l.reduce((w, e) => w + e.t.width, 0) + opt.letterGap * (l.length - 1)));
+  const widthInHeights = Math.max(...lines.map((l) => lineWidth(l, opt)));
   const maxHeight = Math.min(opt.maxHeight, opt.maxWordWidth / widthInHeights);
   if (maxHeight < opt.minHeight) return null;
 
@@ -482,10 +518,15 @@ function readingAngle(letters: LetterMatch[]): number {
 
 export function matchName(rawName: string, sky: SkyStar[], options: Partial<MatchOptions> = {}): NameMatch {
   const opt = { ...DEFAULT_OPTIONS, ...options };
-  const entries: Entry[] = [...normalizeName(rawName)]
-    .map((ch, position) => ({ ch, position }))
-    .filter(({ ch }) => GLYPHS[ch]) // spaces, punctuation, unsupported scripts
-    .map(({ ch, position }) => ({ t: template(ch), position }));
+  const chars = [...normalizeName(rawName)];
+  const entries: Entry[] = [];
+  let pendingSpace = false;
+  chars.forEach((ch, position) => {
+    if (WORD_BREAK.test(ch)) pendingSpace = entries.length > 0;
+    if (!GLYPHS[ch]) return; // spaces, punctuation, unsupported scripts
+    entries.push({ t: template(ch), position, space: pendingSpace });
+    pendingSpace = false;
+  });
   const empty: NameMatch = { name: rawName, layout: "line", letters: [], missing: [], cost: 0, readingAngle: 0 };
   if (entries.length === 0) return empty;
 
@@ -498,7 +539,11 @@ export function matchName(rawName: string, sky: SkyStar[], options: Partial<Matc
   const one = writeLines([entries], pools, opt);
   if (one) best = { state: one, layout: "line" };
   if (entries.length >= opt.minWrapLength) {
-    const split = Math.ceil(entries.length / 2);
+    // Break at the space nearest the middle if there is one ("Mary Ann"), else halfway.
+    const spaces = entries.map((e, i) => (e.space ? i : -1)).filter((i) => i > 0);
+    const split = spaces.length
+      ? spaces.reduce((a, b) => (Math.abs(b - entries.length / 2) < Math.abs(a - entries.length / 2) ? b : a))
+      : Math.ceil(entries.length / 2);
     const two = writeLines([entries.slice(0, split), entries.slice(split)], pools, opt);
     // One line reads best; wrap only when it is clearly better.
     if (two && (!one || perLetter(two) + 0.5 < perLetter(one))) best = { state: two, layout: "two-lines" };

@@ -8,10 +8,16 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "stars": "node scripts/build-stars.mjs",
-    "eval": "node scripts/eval.ts"
+    "eval": "node scripts/eval.ts",
+    "server": "node server/index.ts",
+    "start": "node server/index.ts"
   },
   "devDependencies": {
+    "@types/node": "^26.6.2",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }

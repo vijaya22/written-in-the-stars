@@ -47,6 +47,8 @@ form {
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
 .field.grow { flex: 1 1 180px; }
 .field small { opacity: 0.7; }
+.field .note { opacity: 1; color: var(--accent); min-height: 1.2em; }
+.field .note:empty { display: none; }
 
 input, select, button {
   font: inherit;
@@ -55,9 +57,21 @@ input, select, button {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 10px;
-  min-height: 40px;
+  min-height: 44px;
 }
 input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.field.place { position: relative; flex: 1 1 200px; }
+#place-list {
+  position: absolute; z-index: 10; top: 100%; left: 0; right: 0;
+  margin: 4px 0 0; padding: 4px; list-style: none;
+  max-height: 280px; overflow-y: auto;
+  background: #0d1430; border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+#place-list li { padding: 10px; border-radius: 6px; color: var(--text); cursor: pointer; font-size: 0.95rem; }
+#place-list li[aria-selected="true"] { background: rgba(255, 214, 140, 0.16); }
+#place-list li.empty { color: var(--muted); cursor: default; }
 
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 button { cursor: pointer; background: var(--accent); color: #1a1405; border-color: transparent; font-weight: 600; }
@@ -74,6 +88,12 @@ figcaption { text-align: center; color: var(--muted); font-size: 0.9rem; margin-
 #legend .also { margin-top: 6px; }
 #legend .note { color: var(--text); }
 #status { min-height: 1.5em; margin: 12px 0 0; color: var(--muted); font-size: 0.9rem; }
+
+@media (max-width: 520px) {
+  .field:not(.grow) { flex: 1 1 140px; }
+  .actions { width: 100%; }
+  .actions button { flex: 1 1 100%; }
+}
 
 footer { margin-top: 32px; font-size: 0.8rem; color: var(--muted); }
 footer a { color: var(--text); }

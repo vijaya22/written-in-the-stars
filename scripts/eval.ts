@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { visibleSky, type CatalogStar } from "../src/astro.ts";
 import { lettersOverlap, matchName, type NameMatch } from "../src/matcher.ts";
-import { darkTimes, searchNight } from "../src/night.ts";
+import { bestTimeTonight, darkTimes, rank } from "../src/night.ts";
 
 const catalog: CatalogStar[] = JSON.parse(readFileSync("public/stars.json", "utf8"));
 const verbose = process.argv.includes("-v");
@@ -45,9 +45,15 @@ for (const [place, lat, lon] of PLACES) {
       const t0 = performance.now();
       let m: NameMatch;
       if (night) {
-        let last: NameMatch | undefined;
-        for (const p of searchNight(name, catalog, times, lat, lon)) last = p.best?.match;
-        m = last!;
+        const result = await bestTimeTonight(noon, lat, lon, {
+          evaluate: async (ts) => ts.map((time) => {
+            const match = matchName(name, visibleSky(catalog, new Date(time), lat, lon), { scatterFallback: false });
+            return { time, match, rank: rank(match) };
+          }),
+          scattered: async (time) => matchName(name, visibleSky(catalog, new Date(time), lat, lon)),
+        });
+        if (result.status === "no-night") continue;
+        m = result.match;
       } else {
         m = matchName(name, sky);
       }
