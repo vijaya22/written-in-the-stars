@@ -1,7 +1,8 @@
 // API + static site server.
 //
-//   GET /api/night?name=&lat=&lon=&from=   best time tonight (from = local noon, ms)
-//   GET /api/match?name=&lat=&lon=&time=   the name at one exact moment
+//   GET /api/night?name=&lat=&lon=&from=&sky=   best time tonight (from = local noon, ms)
+//   GET /api/match?name=&lat=&lon=&time=&sky=   the name at one exact moment
+//     sky = city | suburb | dark (default dark): prefer stars visible from there
 //   GET /api/places?q=                     city search
 //   GET /api/places/near?lat=&lon=         closest city (label + time zone for a GPS fix)
 //   GET /api/places/default?tz=            biggest city in a time zone
@@ -15,7 +16,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeName, type NameMatch } from "../src/matcher.ts";
-import { bestTimeTonight, rank, type NightResult } from "../src/night.ts";
+import { bestTimeTonight, rank, sunAltitude, type NightResult } from "../src/night.ts";
+import { isSkyQuality, SKY_LIMIT, twilightLimit } from "../src/sky.ts";
 import { largestInTimeZone, nearestPlace, searchPlaces } from "./places.ts";
 import { MatchPool } from "./pool.ts";
 
@@ -39,7 +41,9 @@ function params(url: URL) {
     if (!url.searchParams.has(key) || !Number.isFinite(v) || v < min || v > max) throw new BadRequest(`${key} must be a number in [${min}, ${max}]`);
     return v;
   };
-  return { name, lat: num("lat", -90, 90), lon: num("lon", -180, 180), num };
+  const sky = url.searchParams.get("sky") ?? "dark";
+  if (!isSkyQuality(sky)) throw new BadRequest("sky must be city, suburb or dark");
+  return { name, lat: num("lat", -90, 90), lon: num("lon", -180, 180), visibleMag: SKY_LIMIT[sky], num };
 }
 
 // ---------------------------------------------------------------------------
@@ -48,9 +52,9 @@ function params(url: URL) {
 const CACHE_SIZE = 1000;
 const cache = new Map<string, Promise<NightResult>>();
 
-function night(name: string, lat: number, lon: number, from: number): Promise<NightResult> {
+function night(name: string, lat: number, lon: number, from: number, visibleMag: number): Promise<NightResult> {
   // ~1 km of rounding doesn't change the sky visibly.
-  const key = [normalizeName(name), lat.toFixed(2), lon.toFixed(2), from].join("|");
+  const key = [normalizeName(name), lat.toFixed(2), lon.toFixed(2), from, visibleMag].join("|");
   const hit = cache.get(key);
   if (hit) {
     cache.delete(key); // move to most-recent
@@ -60,10 +64,10 @@ function night(name: string, lat: number, lon: number, from: number): Promise<Ni
   const job = bestTimeTonight(new Date(from), lat, lon, {
     evaluate: (times) =>
       Promise.all(times.map(async (time) => {
-        const match = await pool.run({ name, lat, lon, time, scatter: false });
+        const match = await pool.run({ name, lat, lon, time, scatter: false, visibleMag });
         return { time, match, rank: rank(match) };
       })),
-    scattered: (time) => pool.run({ name, lat, lon, time, scatter: true }),
+    scattered: (time) => pool.run({ name, lat, lon, time, scatter: true, visibleMag }),
   });
   cache.set(key, job);
   job.catch(() => cache.delete(key));
@@ -117,15 +121,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/api/health") return json(res, 200, { ok: true, workers: pool.size });
 
   if (url.pathname === "/api/night") {
-    const { name, lat, lon, num } = params(url);
+    const { name, lat, lon, visibleMag, num } = params(url);
     const from = num("from", MIN_TIME, MAX_TIME);
-    return json(res, 200, await night(name, lat, lon, from), 3600);
+    return json(res, 200, await night(name, lat, lon, from, visibleMag), 3600);
   }
 
   if (url.pathname === "/api/match") {
-    const { name, lat, lon, num } = params(url);
+    const { name, lat, lon, visibleMag, num } = params(url);
     const time = num("time", MIN_TIME, MAX_TIME);
-    const match: NameMatch = await pool.run({ name, lat, lon, time, scatter: true });
+    // In twilight the sky itself hides the fainter stars.
+    const limit = Math.min(visibleMag, twilightLimit(sunAltitude(new Date(time), lat, lon)));
+    const match: NameMatch = await pool.run({ name, lat, lon, time, scatter: true, visibleMag: limit });
     return json(res, 200, { match }, 3600);
   }
 

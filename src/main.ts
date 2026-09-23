@@ -3,9 +3,11 @@ import { visibleBodies, visibleSky, type CatalogStar, type SkyBody, type SkyStar
 import { solarSystem } from "./ephemeris.ts";
 import { normalizeName, unsupportedChars, type NameMatch } from "./matcher.ts";
 import { GLYPHS } from "./glyphs.ts";
-import type { NightResult } from "./night.ts";
+import { nextDark, sunAltitude, type NightResult } from "./night.ts";
+import { isSkyQuality, SKY_LABEL, SKY_LIMIT, twilightLimit, type SkyQuality } from "./sky.ts";
 import { createPlacePicker, placeLabel, type ApiPlace } from "./place-picker.ts";
 import { renderSky } from "./render.ts";
+import { composeImage, download, toBlob, type ImageFormat } from "./share.ts";
 
 type Place = [label: string, lat: number, lon: number, timeZone: string];
 
@@ -24,6 +26,8 @@ const caption = $<HTMLElement>("#caption");
 const legend = $<HTMLElement>("#legend");
 const status = $<HTMLElement>("#status");
 const nameNote = $<HTMLElement>("#name-note");
+const shareBar = $<HTMLElement>("#share");
+const shareStatus = $<HTMLElement>("#share-status");
 
 /** The name to draw, or null (with a note) when nothing in it can be drawn. */
 function drawableName(): string | null {
@@ -45,6 +49,21 @@ let sky: SkyStar[] = [];
 let bodies: SkyBody[] = [];
 let match: NameMatch | null = null;
 let progress = 1;
+let sunAlt = -90;
+let limitMag = 6;
+
+// The viewer's sky (city / suburb / dark), remembered on this device.
+const skyInputs = [...document.querySelectorAll<HTMLInputElement>('input[name="sky"]')];
+function skyQuality(): SkyQuality {
+  const v = skyInputs.find((i) => i.checked)?.value;
+  return isSkyQuality(v) ? v : "suburb";
+}
+try {
+  const saved = localStorage.getItem("sky");
+  if (isSkyQuality(saved)) skyInputs.forEach((i) => (i.checked = i.value === saved));
+} catch {
+  // storage unavailable: keep the default
+}
 let place: Place = FALLBACK_PLACE;
 
 const BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -89,7 +108,7 @@ const fromApi = (p: ApiPlace): Place => [placeLabel(p), p.lat, p.lon, p.timeZone
 const picker = createPlacePicker(placeInput, placeList, (p) => moveTo(fromApi(p)));
 
 function draw() {
-  renderSky(canvas, { sky, bodies, match, progress });
+  renderSky(canvas, { sky, bodies, match, progress, sunAlt, limitMag });
 }
 
 const COMPASS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"];
@@ -110,6 +129,71 @@ function lookDirection(m: NameMatch): string {
   return `face ${COMPASS[Math.round(az / 45) % 8]}, about ${Math.round(alt / 5) * 5}° up`;
 }
 
+// ---------------------------------------------------------------------------
+// Sharing: the address bar always holds a link that reopens exactly this sky.
+
+let shown: { when: Date; name: string } | null = null;
+
+function updateLink() {
+  if (!shown) return;
+  const [label, lat, lon, timeZone] = currentPlace();
+  const q = new URLSearchParams();
+  if (shown.name) q.set("name", shown.name);
+  q.set("place", label);
+  q.set("lat", lat.toFixed(3));
+  q.set("lon", lon.toFixed(3));
+  q.set("tz", timeZone);
+  q.set("when", dateToWallTime(shown.when, timeZone));
+  q.set("sky", skyQuality());
+  history.replaceState(null, "", `?${q}`);
+}
+
+function imageText() {
+  const [label, , , timeZone] = currentPlace();
+  const name = shown?.name ?? "";
+  const when = shown!.when.toLocaleString(undefined, { dateStyle: "long", timeStyle: "short", timeZone });
+  const look = lookDirection(match!);
+  return {
+    title: `“${name}” written in the stars`,
+    lines: [`${label} · ${when}`, look[0].toUpperCase() + look.slice(1)],
+    letters: match!.letters.map((l) => ({
+      char: l.char,
+      stars: [...new Set([...l.stars].sort((a, b) => a.mag - b.mag).map((s) => s.name))].join(" · "),
+    })),
+    credit: "Real star positions: HYG database (CC BY-SA 4.0) · Written in the Stars",
+  };
+}
+
+const fileName = (format: ImageFormat) =>
+  `${(shown?.name ?? "sky").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-in-the-stars${format === "poster" ? "-poster" : ""}.png`;
+
+async function makeImage(format: ImageFormat): Promise<Blob> {
+  return toBlob(composeImage({ sky, bodies, match, progress: 1, sunAlt, limitMag }, imageText(), format));
+}
+
+$<HTMLButtonElement>("#share-btn").addEventListener("click", async () => {
+  const data = { title: imageText().title, text: `${imageText().title} over ${currentPlace()[0]}`, url: location.href };
+  try {
+    const file = new File([await makeImage("card")], fileName("card"), { type: "image/png" });
+    if (navigator.canShare?.({ files: [file] })) await navigator.share({ ...data, files: [file] });
+    else if (navigator.share) await navigator.share(data);
+    else {
+      await navigator.clipboard.writeText(location.href);
+      shareStatus.textContent = "Link copied. Anyone who opens it sees this exact sky.";
+    }
+  } catch (err) {
+    if ((err as Error).name !== "AbortError") shareStatus.textContent = "Couldn’t share. Copy the address bar link instead.";
+  }
+});
+
+for (const [id, format] of [["#save-card", "card"], ["#save-poster", "poster"]] as const) {
+  $<HTMLButtonElement>(id).addEventListener("click", async () => {
+    shareStatus.textContent = format === "poster" ? "Drawing the poster…" : "";
+    download(await makeImage(format), fileName(format));
+    if (format === "poster") shareStatus.textContent = "Poster saved: 3000 × 4000 px, prints at 30 × 40 cm.";
+  });
+}
+
 /** Show the sky at `when`, with the name's letters if `found`. */
 function show(when: Date, found: NameMatch | null, headline: string | null) {
   const [place, lat, lon, timeZone] = currentPlace();
@@ -117,8 +201,14 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
   sky = visibleSky(catalog, when, lat, lon);
   // Same naked-eye limit as the star catalog: Uranus sometimes makes it, Neptune never does.
   bodies = visibleBodies(solarSystem(when), when, lat, lon).filter((b) => b.mag <= 6);
+  sunAlt = sunAltitude(when, lat, lon);
+  limitMag = Math.min(SKY_LIMIT[skyQuality()], twilightLimit(sunAlt));
   const name = nameInput.value.trim();
   match = found;
+  shown = { when, name };
+  shareBar.hidden = !match?.letters.length;
+  shareStatus.textContent = "";
+  updateLink();
 
   const dateText = when.toLocaleString(undefined, { dateStyle: "long", timeStyle: "short", timeZone });
   caption.textContent = match?.letters.length
@@ -131,6 +221,16 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
 
   legend.replaceChildren();
   if (match) {
+    const all = match.letters.flatMap((l) => l.stars);
+    const seen = all.filter((s) => s.mag <= limitMag).length;
+    if (all.length && seen < all.length) {
+      const li = document.createElement("li");
+      li.className = "note";
+      li.textContent = sunAlt > -12
+        ? `In twilight you’ll see ${seen} of the ${all.length} stars in this name; the dashed rings appear as the sky darkens.`
+        : `From ${SKY_LABEL[skyQuality()]} you’ll see ${seen} of the ${all.length} stars in this name. The dashed rings are too faint there; a darker spot shows them all.`;
+      legend.append(li);
+    }
     if (match.layout === "scattered" && match.letters.length > 1) {
       const li = document.createElement("li");
       li.className = "note";
@@ -145,6 +245,8 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
       const names = [...new Set([...l.stars].sort((a, b) => a.mag - b.mag).map((s) => s.name))];
       const stars = document.createElement("span");
       stars.textContent = names.join(" · ");
+      const hidden = l.stars.filter((s) => s.mag > limitMag).length;
+      if (hidden) stars.textContent += ` (${hidden} too faint here)`;
       li.append(letter, stars);
       legend.append(li);
     }
@@ -156,7 +258,7 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
     }
   }
 
-  const alsoUp = bodies.map((b) => (b.kind === "moon" ? `Moon (${Math.round(100 * (b.illuminated ?? 1))}% lit)` : b.name));
+  const alsoUp = bodies.filter((b) => b.kind === "moon" || (b.kind === "planet" && b.mag <= limitMag)).map((b) => (b.kind === "moon" ? `Moon (${Math.round(100 * (b.illuminated ?? 1))}% lit)` : b.name));
   if (alsoUp.length) {
     const li = document.createElement("li");
     li.className = "also";
@@ -233,6 +335,14 @@ function showExact() {
   const name = drawableName();
   stopSearch();
   show(when, null, null);
+  if (sunAlt > -0.83) {
+    // Daylight: the stars are up there but can't be seen, so there's no name to draw.
+    const dark = nextDark(when, lat, lon);
+    const at = (d: Date) => d.toLocaleString(undefined, { hour: "numeric", minute: "2-digit", timeZone });
+    status.textContent = `The Sun is up at ${at(when)}, so daylight hides the stars.` +
+      (dark ? ` It’s dark enough from about ${at(dark)}. Press Find for the best time tonight.` : "");
+    return;
+  }
   if (!name) {
     status.textContent = "";
     return;
@@ -240,7 +350,7 @@ function showExact() {
   status.textContent = "Finding the name in this sky…";
   request(
     async (signal) => {
-      const { match: found } = await api<{ match: NameMatch }>("match", { name, lat, lon, time: when.getTime() }, signal);
+      const { match: found } = await api<{ match: NameMatch }>("match", { name, lat, lon, time: when.getTime(), sky: skyQuality() }, signal);
       status.textContent = "";
       show(when, found, null);
     },
@@ -265,7 +375,7 @@ function findBestTime() {
   status.textContent = `Searching the night sky over ${place}…`;
   request(
     async (signal) => {
-      const result = await api<NightResult>("night", { name, lat, lon, from: from.getTime() }, signal);
+      const result = await api<NightResult>("night", { name, lat, lon, from: from.getTime(), sky: skyQuality() }, signal);
       if (result.status === "no-night") {
         status.textContent = `It doesn’t get dark enough over ${place} that night for the stars to show.`;
         return;
@@ -291,6 +401,15 @@ form.addEventListener("submit", (e) => {
   findBestTime();
 });
 whenInput.addEventListener("change", showExact);
+for (const input of skyInputs)
+  input.addEventListener("change", () => {
+    try {
+      localStorage.setItem("sky", skyQuality());
+    } catch {
+      // storage unavailable: the choice still applies now
+    }
+    findBestTime();
+  });
 window.addEventListener("resize", draw);
 
 locateBtn.addEventListener("click", () => {
@@ -317,9 +436,20 @@ const params = new URLSearchParams(window.location.search);
 const stillFrame = params.has("still") || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 if (params.get("name")) nameInput.value = params.get("name")!;
 if (params.get("when")) whenInput.value = params.get("when")!;
+const skyParam = params.get("sky");
+if (isSkyQuality(skyParam)) skyInputs.forEach((i) => (i.checked = i.value === skyParam));
 
-/** Starting place: ?place= from a link, else the biggest city in the visitor's time zone. */
+/** Starting place: exact spot from a shared link, a ?place= search, else the biggest city in the visitor's time zone. */
 async function startingPlace(): Promise<Place> {
+  const lat = Number(params.get("lat")), lon = Number(params.get("lon")), tz = params.get("tz");
+  if (params.has("lat") && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && tz) {
+    try {
+      new Intl.DateTimeFormat("en", { timeZone: tz }); // throws on an unknown zone
+      return [params.get("place") || "the shared place", lat, lon, tz];
+    } catch {
+      // bad time zone: fall through to searching
+    }
+  }
   try {
     const q = params.get("place");
     if (q) {

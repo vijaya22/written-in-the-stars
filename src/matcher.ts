@@ -36,6 +36,7 @@ export interface MatchOptions {
   slotGrow: number; // max size ratio between neighbouring letters
   minWrapLength: number; // try two lines for names at least this long
   scatterFallback: boolean; // when no ordered layout fits, place letters anywhere
+  visibleMag: number; // faintest star the viewer's sky shows; fainter ones are used only when needed
 }
 
 export const DEFAULT_OPTIONS: MatchOptions = {
@@ -56,6 +57,7 @@ export const DEFAULT_OPTIONS: MatchOptions = {
   slotGrow: 1.25,
   minWrapLength: 6,
   scatterFallback: true,
+  visibleMag: 6,
 };
 
 export interface LetterMatch {
@@ -285,7 +287,8 @@ function complete(
     height: fit.scale, angle: fit.angle, origin: fit.origin,
     cx: (box[0] + box[2]) / 2, cy: (box[1] + box[3]) / 2, box,
     hull: convexHull(used.map((s) => [s.x, s.y])),
-    score: fit.rms / opt.tolerance + 0.35 * Math.max(0, meanMag - 2),
+    score: fit.rms / opt.tolerance + 0.35 * Math.max(0, meanMag - 2)
+      + 1.5 * used.filter((s) => s.mag > opt.visibleMag).length / used.length, // stars this sky hides
   };
 }
 

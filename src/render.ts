@@ -49,32 +49,61 @@ export interface RenderState {
   bodies: SkyBody[];
   match: NameMatch | null;
   progress: number; // 0..1, animates the letter strokes
+  sunAlt: number; // degrees: sets daylight / twilight / night
+  limitMag: number; // faintest star the viewer can see (light pollution, twilight)
 }
 
-export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progress }: RenderState) {
+type Rgb = [number, number, number];
+const NIGHT: Rgb[] = [[11, 20, 51], [8, 16, 41], [18, 25, 58]]; // centre, middle, horizon
+const DAY: Rgb[] = [[92, 150, 222], [110, 165, 230], [170, 205, 240]];
+const mix = (a: Rgb, b: Rgb, t: number) => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * t)).join(",")})`;
+
+/** 0 at full night (Sun 18° down) … 1 in daylight. */
+const daylight = (sunAlt: number) => Math.min(1, Math.max(0, (sunAlt + 18) / 18)) ** 2;
+
+/**
+ * Draw the sky chart. On screen it fills the canvas's CSS width; for exports,
+ * `size` (CSS px) and `pixelRatio` set the output resolution, and `ctx` may be
+ * any 2D context (e.g. a poster canvas) with `origin` as the chart's top-left.
+ */
+export function renderSky(
+  canvas: HTMLCanvasElement,
+  state: RenderState,
+  out: { size?: number; pixelRatio?: number; ctx?: CanvasRenderingContext2D; origin?: [number, number] } = {},
+) {
+  const { sky, bodies, match, progress, sunAlt, limitMag } = state;
   // Turn the chart so the name reads left to right (the sky has no "up").
   const rot = -(match?.readingAngle ?? 0);
   const rc = Math.cos(rot), rs = Math.sin(rot);
-  const dpr = window.devicePixelRatio || 1;
-  const size = canvas.clientWidth;
-  if (canvas.width !== size * dpr) {
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
+  const dpr = out.pixelRatio ?? (window.devicePixelRatio || 1);
+  const size = out.size ?? canvas.clientWidth;
+  let ctx: CanvasRenderingContext2D;
+  if (out.ctx) {
+    ctx = out.ctx;
+    ctx.save();
+    ctx.translate(...(out.origin ?? [0, 0]));
+  } else {
+    if (canvas.width !== size * dpr) {
+      canvas.width = size * dpr;
+      canvas.height = size * dpr;
+    }
+    ctx = canvas.getContext("2d")!;
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size, size);
   }
-  const ctx = canvas.getContext("2d")!;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, size, size);
+  const day = daylight(sunAlt);
 
   const R = size / 2 - 22;
   const cx = size / 2, cy = size / 2;
   const px = (s: { x: number; y: number }) => [cx + (s.x * rc - s.y * rs) * R, cy + (s.x * rs + s.y * rc) * R] as const;
   const k = size / 640; // scale star sizes with the canvas
 
-  // Sky dome
+  // Sky dome: night blue, brightening through twilight into day
   const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
-  bg.addColorStop(0, "#0b1433");
-  bg.addColorStop(0.75, "#081029");
-  bg.addColorStop(1, "#12193a");
+  bg.addColorStop(0, mix(NIGHT[0], DAY[0], day));
+  bg.addColorStop(0.75, mix(NIGHT[1], DAY[1], day));
+  bg.addColorStop(1, mix(NIGHT[2], DAY[2], day));
   ctx.fillStyle = bg;
   ctx.beginPath();
   ctx.arc(cx, cy, R, 0, Math.PI * 2);
@@ -100,8 +129,11 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
   ctx.clip();
   for (let i = sky.length - 1; i >= 0; i--) {
     const s = sky[i];
+    // Stars the viewer's sky hides stay as a faint hint (none at all in daylight).
+    const hidden = s.mag > limitMag;
+    if (hidden && day > 0.6) continue;
     const [x, y] = px(s);
-    ctx.globalAlpha = Math.min(1, 0.35 + (6 - s.mag) * 0.14) * (s.alt < 10 ? 0.4 + s.alt * 0.06 : 1);
+    ctx.globalAlpha = Math.min(1, 0.35 + (6 - s.mag) * 0.14) * (s.alt < 10 ? 0.4 + s.alt * 0.06 : 1) * (hidden ? 0.18 : 1);
     ctx.fillStyle = starColor(s.ci);
     ctx.beginPath();
     ctx.arc(x, y, starRadius(s.mag) * k, 0, Math.PI * 2);
@@ -126,9 +158,26 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
     }) ?? null;
   };
   for (const b of bodies) {
+    // Planets follow the same rule as stars: too faint for this sky means a faint hint, or nothing by day.
+    const hiddenPlanet = b.kind === "planet" && b.mag > limitMag;
+    if (hiddenPlanet && day > 0.6) continue;
+    ctx.globalAlpha = hiddenPlanet ? 0.25 : 1;
     const [x, y] = px(b);
     let r: number;
-    if (b.kind === "moon") {
+    if (b.kind === "sun") {
+      r = 13 * k;
+      const glow = ctx.createRadialGradient(x, y, r * 0.5, x, y, r * 5);
+      glow.addColorStop(0, "rgba(255, 250, 225, 0.9)");
+      glow.addColorStop(1, "rgba(255, 250, 225, 0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (b.kind === "moon") {
       r = 11 * k;
       drawMoon(ctx, x, y, r, b.illuminated ?? 1, (b.litAngle ?? 0) + rot);
     } else {
@@ -143,7 +192,9 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
       ctx.arc(x, y, r + 3 * k, 0, Math.PI * 2);
       ctx.stroke();
     }
-    const spot = labelSpot(x, y, r, b.name);
+    ctx.globalAlpha = 1;
+    // The Sun needs no label (and one would vanish in its glare); hidden planets aren't named.
+    const spot = b.kind === "sun" || hiddenPlanet ? null : labelSpot(x, y, r, b.name);
     if (spot) {
       ctx.fillStyle = "rgba(200, 210, 240, 0.75)";
       ctx.textAlign = spot[2];
@@ -152,7 +203,10 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
   }
   ctx.restore();
 
-  if (!match) return;
+  if (!match) {
+    ctx.restore();
+    return;
+  }
 
   // Scattered letters: a faint thread and numbers carry the reading order.
   if (match.layout === "scattered" && match.letters.length > 1) {
@@ -208,6 +262,17 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
     ctx.globalAlpha = local;
     for (const s of l.stars) {
       const [x, y] = px(s);
+      if (s.mag > limitMag) {
+        // Too faint for this sky: a hollow ring marks where the star is.
+        ctx.strokeStyle = "rgba(255, 230, 190, 0.8)";
+        ctx.lineWidth = 1.2 * Math.max(1, k);
+        ctx.setLineDash([2 * k, 2 * k]);
+        ctx.beginPath();
+        ctx.arc(x, y, 4.5 * k, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        continue;
+      }
       const halo = ctx.createRadialGradient(x, y, 0, x, y, 9 * k);
       halo.addColorStop(0, "rgba(255, 240, 210, 0.9)");
       halo.addColorStop(1, "rgba(255, 220, 160, 0)");
@@ -222,4 +287,5 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progr
     }
     ctx.restore();
   });
+  ctx.restore();
 }

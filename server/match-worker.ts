@@ -11,6 +11,7 @@ export interface MatchTask {
   lon: number;
   time: number; // ms timestamp
   scatter: boolean; // allow the numbered-letters fallback
+  visibleMag: number; // faintest star the viewer's sky shows
 }
 
 const catalog: CatalogStar[] = JSON.parse(readFileSync(new URL("../public/stars.json", import.meta.url), "utf8"));
@@ -18,7 +19,7 @@ const catalog: CatalogStar[] = JSON.parse(readFileSync(new URL("../public/stars.
 parentPort!.on("message", ({ id, task }: { id: number; task: MatchTask }) => {
   try {
     const sky = visibleSky(catalog, new Date(task.time), task.lat, task.lon);
-    const match: NameMatch = matchName(task.name, sky, { scatterFallback: task.scatter });
+    const match: NameMatch = matchName(task.name, sky, { scatterFallback: task.scatter, visibleMag: task.visibleMag });
     parentPort!.postMessage({ id, match });
   } catch (err) {
     parentPort!.postMessage({ id, error: (err as Error).message });

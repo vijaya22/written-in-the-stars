@@ -12,7 +12,7 @@ type Vec = [number, number, number];
 
 export interface Body {
   name: string;
-  kind: "planet" | "moon";
+  kind: "planet" | "moon" | "sun";
   ra: number; // hours, J2000
   dec: number; // degrees, J2000
   mag: number;
@@ -151,6 +151,9 @@ export function solarSystem(date: Date): Body[] {
     const [ra, dec] = toEquatorial(geo);
     bodies.push({ name, kind: "planet", ra, dec, mag: MAGNITUDE[name](r, delta, phase), color: COLORS[name] });
   }
+
+  const [sRa, sDec] = toEquatorial(sun);
+  bodies.push({ name: "Sun", kind: "sun", ra: sRa, dec: sDec, mag: -26.7, color: "#fff4c2" });
 
   const moon = moonVector(date);
   const [ra, dec] = toEquatorial(moon);

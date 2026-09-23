@@ -29,6 +29,21 @@ export function darkTimes(from: Date, lat: number, lon: number, stepMin = 15): N
   return out;
 }
 
+/** Sun altitude (degrees) for an observer. */
+export function sunAltitude(date: Date, lat: number, lon: number): number {
+  const sun = sunPosition(date);
+  return altitude(sun.ra, sun.dec, date, lat, lon);
+}
+
+/** The next moment (within a day) the sky is dark enough for the stars, or null. */
+export function nextDark(after: Date, lat: number, lon: number): Date | null {
+  for (let t = 0; t <= 24 * 60; t += 5) {
+    const date = new Date(after.getTime() + t * 60000);
+    if (sunAltitude(date, lat, lon) <= DARK_SUN_ALT) return date;
+  }
+  return null;
+}
+
 const LAYOUT_PENALTY = { line: 0, "two-lines": 1.5, scattered: 5 };
 
 /** Lower is better: layout first, then fit and brightness per letter. */

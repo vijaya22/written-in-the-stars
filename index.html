@@ -29,8 +29,16 @@
           <span>Date &amp; time <small>(local time at that place)</small></span>
           <input id="when" type="datetime-local" />
         </label>
+        <fieldset class="field sky">
+          <legend>Your sky</legend>
+          <div class="segmented">
+            <label><input type="radio" name="sky" value="city" /> City</label>
+            <label><input type="radio" name="sky" value="suburb" checked /> Suburb</label>
+            <label><input type="radio" name="sky" value="dark" /> Dark sky</label>
+          </div>
+        </fieldset>
         <div class="actions">
-          <button type="submit">Find the best time tonight</button>
+          <button type="submit">Find</button>
           <button type="button" id="locate" class="ghost">Use my location</button>
         </div>
       </form>
@@ -40,6 +48,12 @@
         <canvas id="sky" role="img" aria-describedby="caption legend"></canvas>
         <figcaption id="caption"></figcaption>
       </figure>
+      <div id="share" class="share" hidden>
+        <button type="button" id="share-btn">Share</button>
+        <button type="button" id="save-card" class="ghost">Save image</button>
+        <button type="button" id="save-poster" class="ghost">Poster (print)</button>
+        <span id="share-status" role="status"></span>
+      </div>
       <ol id="legend"></ol>
 
       <footer>
