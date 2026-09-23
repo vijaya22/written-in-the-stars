@@ -90,12 +90,32 @@ button { cursor: pointer; background: var(--accent); color: #1a1405; border-colo
 button.ghost { background: transparent; color: var(--text); border-color: var(--border); font-weight: 400; }
 
 figure { margin: 24px 0 8px; }
-canvas { display: block; width: 100%; max-width: 720px; aspect-ratio: 1; margin: 0 auto; }
+#sky { display: block; width: 100%; max-width: 720px; aspect-ratio: 1; margin: 0 auto; }
 figcaption { text-align: center; color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
 
 .share { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: center; margin: 12px 0 0; }
 .share[hidden] { display: none; }
 #share-status { flex-basis: 100%; text-align: center; min-height: 1.2em; color: var(--muted); font-size: 0.85rem; }
+
+a.button {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 16px;
+  border-radius: 8px; background: var(--accent); color: #1a1405; font-weight: 600; text-decoration: none;
+}
+a.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#poster-dialog {
+  width: min(760px, calc(100% - 32px)); max-height: calc(100% - 32px); padding: 20px;
+  background: #0d1430; color: var(--text); border: 1px solid var(--border); border-radius: 12px;
+}
+#poster-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+#poster-dialog h2 { margin: 0 0 16px; font-family: Georgia, serif; font-weight: 400; }
+.poster-body { display: flex; gap: 20px; flex-wrap: wrap; }
+.poster-preview { flex: 1 1 220px; display: flex; justify-content: center; align-items: flex-start; }
+.poster-preview canvas { width: 100%; max-width: 300px; height: auto; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+.poster-options { flex: 1 1 260px; display: flex; flex-direction: column; gap: 14px; }
+.poster-options fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.poster-options legend { padding: 0; margin-bottom: 4px; font-size: 0.85rem; color: var(--muted); }
+.hint { margin: 0; color: var(--muted); font-size: 0.9rem; }
 
 #legend { list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 6px; }
 #legend li { display: flex; gap: 12px; align-items: baseline; font-size: 0.9rem; color: var(--muted); }

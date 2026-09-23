@@ -3,12 +3,13 @@
 import { availableParallelism } from "node:os";
 import { Worker } from "node:worker_threads";
 import type { NameMatch } from "../src/matcher.ts";
-import type { MatchTask } from "./match-worker.ts";
+import type { MatchTask, WorkerTask } from "./match-worker.ts";
+import type { ImageTask } from "./render-image.ts";
 
 interface Job {
   id: number;
-  task: MatchTask;
-  resolve: (m: NameMatch) => void;
+  job: WorkerTask;
+  resolve: (result: unknown) => void;
   reject: (e: Error) => void;
 }
 
@@ -38,12 +39,12 @@ export class MatchPool {
 
   private spawn() {
     const worker = new Worker(new URL("./match-worker.ts", import.meta.url));
-    worker.on("message", (msg: { id: number; match?: NameMatch; error?: string }) => {
+    worker.on("message", (msg: { id: number; result?: unknown; error?: string }) => {
       const job = this.running.get(worker);
       this.running.delete(worker);
       if (job) {
         if (msg.error !== undefined) job.reject(new Error(msg.error));
-        else job.resolve(msg.match!);
+        else job.resolve(msg.result);
       }
       this.idle.push(worker);
       this.drain();
@@ -64,14 +65,23 @@ export class MatchPool {
       const worker = this.idle.pop()!;
       const job = this.queue.shift()!;
       this.running.set(worker, job);
-      worker.postMessage({ id: job.id, task: job.task });
+      worker.postMessage({ id: job.id, job: job.job });
     }
   }
 
-  run(task: MatchTask): Promise<NameMatch> {
+  private submit<T>(job: WorkerTask): Promise<T> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ id: this.nextId++, task, resolve, reject });
+      this.queue.push({ id: this.nextId++, job, resolve: resolve as (r: unknown) => void, reject });
       this.drain();
     });
+  }
+
+  run(task: MatchTask): Promise<NameMatch> {
+    return this.submit({ kind: "match", task });
+  }
+
+  /** PNG (previews) or PDF (posters) bytes. */
+  image(task: ImageTask): Promise<Uint8Array> {
+    return this.submit({ kind: "image", task });
   }
 }

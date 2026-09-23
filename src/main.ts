@@ -7,7 +7,10 @@ import { nextDark, sunAltitude, type NightResult } from "./night.ts";
 import { isSkyQuality, SKY_LABEL, SKY_LIMIT, twilightLimit, type SkyQuality } from "./sky.ts";
 import { createPlacePicker, placeLabel, type ApiPlace } from "./place-picker.ts";
 import { renderSky } from "./render.ts";
-import { composeImage, download, toBlob, type ImageFormat } from "./share.ts";
+import { imageText as describeImage, lookDirection } from "./describe.ts";
+import { dateToWallTime, wallTimeToDate } from "./time.ts";
+import { composeImage, download, isPosterSize, POSTER_SIZES, THEME_LABELS, toBlob, type ImageFormat } from "./share.ts";
+import { isThemeName, PALETTES } from "./render.ts";
 
 type Place = [label: string, lat: number, lon: number, timeZone: string];
 
@@ -68,29 +71,6 @@ let place: Place = FALLBACK_PLACE;
 
 const BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-/** Milliseconds that `timeZone` is ahead of UTC at the given instant. */
-function tzOffset(utcMs: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone, hourCycle: "h23",
-    year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
-  }).formatToParts(new Date(utcMs));
-  const get = (t: string) => Number(parts.find((p) => p.type === t)!.value);
-  return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - utcMs;
-}
-
-/** "2026-09-23T22:00" read as wall-clock time in `timeZone` -> Date. */
-function wallTimeToDate(value: string, timeZone: string): Date {
-  const [y, mo, d, h, mi] = value.split(/[-T:]/).map(Number);
-  const guess = Date.UTC(y, mo - 1, d, h, mi);
-  let utc = guess - tzOffset(guess, timeZone);
-  utc = guess - tzOffset(utc, timeZone); // settle across DST changes
-  return new Date(utc);
-}
-
-/** Date -> "2026-09-23T22:00" wall-clock time in `timeZone`. */
-function dateToWallTime(date: Date, timeZone: string): string {
-  return new Date(date.getTime() + tzOffset(date.getTime(), timeZone)).toISOString().slice(0, 16);
-}
 
 function currentPlace(): Place {
   return place;
@@ -111,23 +91,6 @@ function draw() {
   renderSky(canvas, { sky, bodies, match, progress, sunAlt, limitMag });
 }
 
-const COMPASS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"];
-
-/** Where to look for the name: average direction of its stars. */
-function lookDirection(m: NameMatch): string {
-  let x = 0, y = 0, z = 0;
-  for (const l of m.letters)
-    for (const s of l.stars) {
-      const alt = (s.alt * Math.PI) / 180, az = (s.az * Math.PI) / 180;
-      x += Math.cos(alt) * Math.cos(az);
-      y += Math.cos(alt) * Math.sin(az);
-      z += Math.sin(alt);
-    }
-  const alt = (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI;
-  if (alt > 75) return "look straight up";
-  const az = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
-  return `face ${COMPASS[Math.round(az / 45) % 8]}, about ${Math.round(alt / 5) * 5}° up`;
-}
 
 // ---------------------------------------------------------------------------
 // Sharing: the address bar always holds a link that reopens exactly this sky.
@@ -150,31 +113,28 @@ function updateLink() {
 
 function imageText() {
   const [label, , , timeZone] = currentPlace();
-  const name = shown?.name ?? "";
-  const when = shown!.when.toLocaleString(undefined, { dateStyle: "long", timeStyle: "short", timeZone });
-  const look = lookDirection(match!);
-  return {
-    title: `“${name}” written in the stars`,
-    lines: [`${label} · ${when}`, look[0].toUpperCase() + look.slice(1)],
-    letters: match!.letters.map((l) => ({
-      char: l.char,
-      stars: [...new Set([...l.stars].sort((a, b) => a.mag - b.mag).map((s) => s.name))].join(" · "),
-    })),
-    credit: "Real star positions: HYG database (CC BY-SA 4.0) · Written in the Stars",
-  };
+  return describeImage(shown?.name ?? "", label, shown!.when, timeZone, match!);
 }
 
-const fileName = (format: ImageFormat) =>
-  `${(shown?.name ?? "sky").toLowerCase().replace(/[^a-z0-9]+/g, "-")}-in-the-stars${format === "poster" ? "-poster" : ""}.png`;
+const slug = () => (shown?.name ?? "sky").toLowerCase().replace(/[^a-z0-9]+/g, "-");
 
-async function makeImage(format: ImageFormat): Promise<Blob> {
-  return toBlob(composeImage({ sky, bodies, match, progress: 1, sunAlt, limitMag }, imageText(), format));
+const browserCanvas = (w: number, h: number) => {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return c;
+};
+
+function drawImage(format: ImageFormat, theme = "midnight" as keyof typeof PALETTES) {
+  return composeImage({ sky, bodies, match, progress: 1, sunAlt, limitMag }, imageText(), format, { theme, createCanvas: browserCanvas });
 }
+
+const makeCard = () => toBlob(drawImage("card"));
 
 $<HTMLButtonElement>("#share-btn").addEventListener("click", async () => {
   const data = { title: imageText().title, text: `${imageText().title} over ${currentPlace()[0]}`, url: location.href };
   try {
-    const file = new File([await makeImage("card")], fileName("card"), { type: "image/png" });
+    const file = new File([await makeCard()], `${slug()}-in-the-stars.png`, { type: "image/png" });
     if (navigator.canShare?.({ files: [file] })) await navigator.share({ ...data, files: [file] });
     else if (navigator.share) await navigator.share(data);
     else {
@@ -186,13 +146,45 @@ $<HTMLButtonElement>("#share-btn").addEventListener("click", async () => {
   }
 });
 
-for (const [id, format] of [["#save-card", "card"], ["#save-poster", "poster"]] as const) {
-  $<HTMLButtonElement>(id).addEventListener("click", async () => {
-    shareStatus.textContent = format === "poster" ? "Drawing the poster…" : "";
-    download(await makeImage(format), fileName(format));
-    if (format === "poster") shareStatus.textContent = "Poster saved: 3000 × 4000 px, prints at 30 × 40 cm.";
-  });
+$<HTMLButtonElement>("#save-card").addEventListener("click", async () => {
+  download(await makeCard(), `${slug()}-in-the-stars.png`);
+});
+
+// Poster: pick a size and style, preview it here; the print PDF is drawn by the server.
+const posterDialog = $<HTMLDialogElement>("#poster-dialog");
+const posterSize = $<HTMLSelectElement>("#poster-size");
+const posterPreview = $<HTMLElement>("#poster-preview");
+const posterLink = $<HTMLAnchorElement>("#poster-download");
+const themeInputs = () => [...document.querySelectorAll<HTMLInputElement>('input[name="poster-theme"]')];
+
+for (const [key, { label }] of Object.entries(POSTER_SIZES)) posterSize.add(new Option(label, key));
+$<HTMLElement>("#poster-themes").replaceChildren(
+  ...Object.entries(THEME_LABELS).map(([key, label], i) => {
+    const l = document.createElement("label");
+    l.innerHTML = `<input type="radio" name="poster-theme" value="${key}"${i === 0 ? " checked" : ""} /> `;
+    l.append(label);
+    return l;
+  }),
+);
+
+function updatePoster() {
+  const size = posterSize.value;
+  const theme = themeInputs().find((i) => i.checked)?.value;
+  if (!isPosterSize(size) || !isThemeName(theme)) return;
+  const preview = drawImage(size, theme);
+  preview.setAttribute("aria-label", `Preview of the ${THEME_LABELS[theme]} poster`);
+  posterPreview.replaceChildren(preview);
+  posterLink.href = `/poster.pdf${location.search}&size=${size}&theme=${theme}`;
+  posterLink.download = `${slug()}-in-the-stars-${size}-${theme}.pdf`;
 }
+
+posterSize.addEventListener("change", updatePoster);
+$<HTMLElement>("#poster-themes").addEventListener("change", updatePoster);
+$<HTMLButtonElement>("#save-poster").addEventListener("click", () => {
+  updatePoster();
+  posterDialog.showModal();
+});
+$<HTMLButtonElement>("#poster-close").addEventListener("click", () => posterDialog.close());
 
 /** Show the sky at `when`, with the name's letters if `found`. */
 function show(when: Date, found: NameMatch | null, headline: string | null) {

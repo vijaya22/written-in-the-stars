@@ -9,8 +9,10 @@ RUN npm run build
 FROM node:24-slim
 ENV NODE_ENV=production PORT=8787 TRUST_PROXY=1
 WORKDIR /app
-# The server has no npm dependencies at runtime: just its code, the shared src/, and the data.
-COPY --from=build /app/package.json ./
+# Runtime needs one npm package (skia-canvas, for preview images and posters), plus
+# the server code, the shared src/, and the data.
+COPY --from=build /app/package.json /app/package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
 COPY --from=build /app/src ./src

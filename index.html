@@ -56,10 +56,32 @@
       <div id="share" class="share" hidden>
         <button type="button" id="share-btn">Share</button>
         <button type="button" id="save-card" class="ghost">Save image</button>
-        <button type="button" id="save-poster" class="ghost">Poster (print)</button>
+        <button type="button" id="save-poster" class="ghost">Poster</button>
         <span id="share-status" role="status"></span>
       </div>
       <ol id="legend"></ol>
+
+      <dialog id="poster-dialog" aria-labelledby="poster-title">
+        <h2 id="poster-title">Print poster</h2>
+        <div class="poster-body">
+          <div id="poster-preview" class="poster-preview"></div>
+          <div class="poster-options">
+            <label class="field">
+              <span>Size</span>
+              <select id="poster-size"></select>
+            </label>
+            <fieldset class="field">
+              <legend>Style</legend>
+              <div id="poster-themes" class="segmented"></div>
+            </fieldset>
+            <p class="hint">A print-ready PDF: sharp at any size. Take it to any print shop or online printer.</p>
+            <div class="actions">
+              <a id="poster-download" class="button" href="#">Download PDF</a>
+              <button type="button" id="poster-close" class="ghost">Close</button>
+            </div>
+          </div>
+        </div>
+      </dialog>
 
       <footer>
         Star positions from the <a href="https://github.com/astronexus/HYG-Database">HYG database</a> (CC BY-SA 4.0);

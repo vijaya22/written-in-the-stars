@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     environment:
       WORKERS: ${WORKERS:-}
+      PUBLIC_ORIGIN: https://${DOMAIN}
     # Not published: only Caddy talks to it.
     expose:
       - "8787"
