@@ -29,6 +29,16 @@ const caption = $<HTMLElement>("#caption");
 const legend = $<HTMLElement>("#legend");
 const status = $<HTMLElement>("#status");
 const nameNote = $<HTMLElement>("#name-note");
+const skySummary = $<HTMLElement>("#sky-summary");
+
+const SKY_WORD: Record<SkyQuality, string> = { city: "city sky", suburb: "suburban sky", dark: "dark sky" };
+
+/** One line under "Choose my sky": where, when and how dark, so the options can stay folded away. */
+function updateSkySummary(when: Date) {
+  const [label, , , timeZone] = currentPlace();
+  const time = when.toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit", timeZone });
+  skySummary.textContent = `${label} · ${time} · ${SKY_WORD[skyQuality()]}`;
+}
 const shareBar = $<HTMLElement>("#share");
 const shareStatus = $<HTMLElement>("#share-status");
 
@@ -198,6 +208,7 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
   const name = nameInput.value.trim();
   match = found;
   shown = { when, name };
+  updateSkySummary(when);
   shareBar.hidden = !match?.letters.length;
   shareStatus.textContent = "";
   updateLink();
@@ -215,12 +226,21 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
   if (match) {
     const all = match.letters.flatMap((l) => l.stars);
     const seen = all.filter((s) => s.mag <= limitMag).length;
-    if (all.length && seen < all.length) {
+    // Estimates only: weather, haze, moonlight and nearby lights all hide stars.
+    const moon = bodies.find((b) => b.kind === "moon" && (b.illuminated ?? 0) > 0.5);
+    const moonNote = moon ? " Tonight’s bright Moon may hide more." : "";
+    if (all.length) {
       const li = document.createElement("li");
       li.className = "note";
-      li.textContent = sunAlt > -12
-        ? `In twilight you’ll see ${seen} of the ${all.length} stars in this name; the dashed rings appear as the sky darkens.`
-        : `From ${SKY_LABEL[skyQuality()]} you’ll see ${seen} of the ${all.length} stars in this name. The dashed rings are too faint there; a darker spot shows them all.`;
+      if (sunAlt > -12) {
+        li.textContent = `In twilight only about ${seen} of the ${all.length} stars in this name may show yet; more appear as the sky darkens.`;
+      } else if (seen < all.length) {
+        li.textContent = `About ${seen} of the ${all.length} stars in this name may be visible from ${SKY_LABEL[skyQuality()]} on a clear night. ` +
+          `The dashed rings are likely too faint there; weather and nearby lights can hide more.${moonNote}`;
+      } else {
+        li.textContent = `All ${all.length} stars in this name should be visible from ${SKY_LABEL[skyQuality()]} on a clear night, ` +
+          `though weather and nearby lights can hide some.${moonNote}`;
+      }
       legend.append(li);
     }
     if (match.layout === "scattered" && match.letters.length > 1) {
@@ -238,7 +258,7 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
       const stars = document.createElement("span");
       stars.textContent = names.join(" · ");
       const hidden = l.stars.filter((s) => s.mag > limitMag).length;
-      if (hidden) stars.textContent += ` (${hidden} too faint here)`;
+      if (hidden) stars.textContent += ` (${hidden} likely too faint here)`;
       li.append(letter, stars);
       legend.append(li);
     }
@@ -313,9 +333,11 @@ async function request(work: (signal: AbortSignal) => Promise<void>, onError: (m
 
 /** On small screens the chart starts below the form; bring it into view once there's a result. */
 function revealChart() {
-  const fig = canvas.parentElement!;
-  if (fig.getBoundingClientRect().top > window.innerHeight * 0.6) {
-    fig.scrollIntoView({ behavior: stillFrame ? "auto" : "smooth", block: "start" });
+  const { top } = status.getBoundingClientRect();
+  const { bottom } = canvas.getBoundingClientRect();
+  // The explanation line, chart and caption are sized to fit one screen: scroll only if they don't show.
+  if (top < 0 || bottom > window.innerHeight) {
+    status.scrollIntoView({ behavior: stillFrame ? "auto" : "smooth", block: "start" });
   }
 }
 
@@ -362,8 +384,12 @@ function findBestTime() {
   const day = new Date(Date.UTC(y, mo - 1, d - (h < 12 ? 1 : 0))).toISOString().slice(0, 10);
   const from = wallTimeToDate(`${day}T12:00`, timeZone);
 
+  const asked = wallTimeToDate(whenInput.value, timeZone);
+  const askedInDaylight = sunAltitude(asked, lat, lon) > -0.83;
+  const clock = (d: Date) => d.toLocaleString(undefined, { hour: "numeric", minute: "2-digit", timeZone });
+
   stopSearch();
-  show(wallTimeToDate(whenInput.value, timeZone), null, null); // the sky, while we search
+  show(asked, null, null); // the sky, while we search
   status.textContent = `Searching the night sky over ${place}…`;
   request(
     async (signal) => {
@@ -374,13 +400,25 @@ function findBestTime() {
       }
       const when = new Date(result.time);
       if (result.status === "scattered") {
-        status.textContent = "Tonight’s sky can’t spell this name in order, so the letters are numbered.";
+        status.textContent = `Tonight’s sky can’t spell this name in order at any hour, so the letters are numbered. ` +
+          `This is the darkest moment, ${clock(when)}.`;
         show(when, result.match, null);
         revealChart();
         return;
       }
       const time = when.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit", timeZone });
-      status.textContent = "Change the time to see the sky at any other moment.";
+      // Say why the time moved, so it reads as a choice rather than a glitch.
+      const minutes = (when.getTime() - asked.getTime()) / 60000;
+      const dayOf = (d: Date) => dateToWallTime(d, timeZone).slice(0, 10);
+      const moment = dayOf(when) > dayOf(asked) ? "early tomorrow morning"
+        : dayOf(when) < dayOf(asked) ? "earlier in the night"
+        : minutes > 0 ? "later tonight" : "earlier tonight";
+      status.textContent = askedInDaylight
+        ? `It’s still light at ${clock(asked)}, so we found the clearest arrangement after dark, at ${clock(when)}.`
+        : Math.abs(minutes) <= 20
+          ? `This is the clearest arrangement tonight.`
+          : `We found the clearest arrangement ${moment}, at ${clock(when)}.`;
+      status.textContent += " Other times are under “Choose my sky”.";
       show(when, result.match, `“${name}” is clearest ${time} over ${place}`);
       revealChart();
     },

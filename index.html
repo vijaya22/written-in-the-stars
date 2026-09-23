@@ -19,33 +19,41 @@
       </header>
 
       <form id="form">
-        <label class="field grow">
-          <span>Name</span>
-          <input id="name" autocomplete="off" maxlength="20" placeholder="Type a name" aria-describedby="name-note" />
-          <small id="name-note" class="note" aria-live="polite"></small>
-        </label>
-        <div class="field place">
-          <label for="place">Place</label>
-          <input id="place" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="place-list"
-                 autocomplete="off" spellcheck="false" placeholder="Search for a city" />
-          <ul id="place-list" role="listbox" aria-label="Matching cities" hidden></ul>
+        <div class="name-row">
+          <label class="field grow">
+            <span>Your name</span>
+            <input id="name" autocomplete="off" maxlength="20" placeholder="Type a name" aria-describedby="name-note" />
+            <small id="name-note" class="note" aria-live="polite"></small>
+          </label>
+          <button type="submit" class="find">Find</button>
         </div>
-        <label class="field">
-          <span>Date &amp; time <small>(local time at that place)</small></span>
-          <input id="when" type="datetime-local" />
-        </label>
-        <fieldset class="field sky">
-          <legend>Your sky</legend>
-          <div class="segmented">
-            <label><input type="radio" name="sky" value="city" /> City</label>
-            <label><input type="radio" name="sky" value="suburb" checked /> Suburb</label>
-            <label><input type="radio" name="sky" value="dark" /> Dark sky</label>
+        <details id="sky-options" class="sky-options">
+          <summary>
+            <span class="summary-label">Choose my sky</span>
+            <span id="sky-summary" class="summary-text"></span>
+          </summary>
+          <div class="options">
+            <div class="field place">
+              <label for="place">Place</label>
+              <input id="place" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="place-list"
+                     autocomplete="off" spellcheck="false" placeholder="Search for a city" />
+              <ul id="place-list" role="listbox" aria-label="Matching cities" hidden></ul>
+            </div>
+            <label class="field">
+              <span>Date &amp; time <small>(local time at that place)</small></span>
+              <input id="when" type="datetime-local" />
+            </label>
+            <fieldset class="field sky">
+              <legend>How dark is your sky?</legend>
+              <div class="segmented">
+                <label><input type="radio" name="sky" value="city" /> City</label>
+                <label><input type="radio" name="sky" value="suburb" checked /> Suburb</label>
+                <label><input type="radio" name="sky" value="dark" /> Dark sky</label>
+              </div>
+            </fieldset>
+            <button type="button" id="locate" class="ghost">Use my location</button>
           </div>
-        </fieldset>
-        <div class="actions">
-          <button type="submit">Find</button>
-          <button type="button" id="locate" class="ghost">Use my location</button>
-        </div>
+        </details>
       </form>
       <p id="status" role="status"></p>
 
