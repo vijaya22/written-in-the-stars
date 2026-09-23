@@ -6,7 +6,7 @@
 
 import { readFileSync } from "node:fs";
 import { visibleSky, type CatalogStar } from "../src/astro.ts";
-import { matchName, type NameMatch } from "../src/matcher.ts";
+import { lettersOverlap, matchName, type NameMatch } from "../src/matcher.ts";
 import { darkTimes, searchNight } from "../src/night.ts";
 
 const catalog: CatalogStar[] = JSON.parse(readFileSync("public/stars.json", "utf8"));
@@ -24,6 +24,7 @@ const PLACES: [string, number, number][] = [
 // Local ~22:00 at a few dates across the year (UTC hour adjusted by longitude).
 const DATES = ["2026-01-15", "2026-04-15", "2026-07-15", "2026-09-23"];
 
+let overlaps = 0;
 let letters = 0, found = 0, fullNames = 0, runs = 0, errSum = 0, magSum = 0, ms = 0;
 const perChar = new Map<string, [number, number]>();
 const layouts = new Map<string, Map<string, number>>(); // name-length bucket -> layout -> count
@@ -59,6 +60,9 @@ for (const [place, lat, lon] of PLACES) {
       b.set(m.layout, (b.get(m.layout) ?? 0) + 1);
       layouts.set(bucket(name.length), b);
       for (const l of m.letters) { errSum += l.error; magSum += l.meanMag; }
+      m.letters.forEach((a, i) => m.letters.slice(i + 1).forEach((b) => {
+        if (lettersOverlap(a, b, 0)) overlaps++;
+      }));
       for (const ch of name) {
         const e = perChar.get(ch) ?? [0, 0];
         e[1]++;
@@ -78,6 +82,7 @@ for (const [place, lat, lon] of PLACES) {
 console.log(`\nruns: ${runs}   avg time: ${(ms / runs).toFixed(0)} ms/name`);
 console.log(`letters found: ${found}/${letters} (${((100 * found) / letters).toFixed(1)}%)   full names: ${fullNames}/${runs}`);
 console.log(`mean fit error: ${(errSum / found).toFixed(3)} letter-heights   mean star magnitude: ${(magSum / found).toFixed(2)}`);
+console.log(`overlapping letter pairs: ${overlaps}`);
 console.log("reading order by name length:");
 for (const [b, counts] of [...layouts].sort()) {
   const n = [...counts.values()].reduce((x, y) => x + y, 0);

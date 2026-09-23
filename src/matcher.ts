@@ -30,6 +30,7 @@ export interface MatchOptions {
   maxBendDeg: number; // how much the baseline may turn from one letter to the next
   maxTotalBendDeg: number;
   maxWordWidth: number; // chart units a single line may span
+  minClearance: number; // letters keep at least this far apart, in letter heights
   slotGap: [number, number]; // how far off the expected spacing a letter may sit, in letter heights
   slotShift: number; // how far above/below the baseline
   slotGrow: number; // max size ratio between neighbouring letters
@@ -49,6 +50,7 @@ export const DEFAULT_OPTIONS: MatchOptions = {
   maxBendDeg: 12,
   maxTotalBendDeg: 45,
   maxWordWidth: 1.4,
+  minClearance: 0.2, // star glows are ~0.15 letter heights wide
   slotGap: [-0.3, 0.6],
   slotShift: 0.3,
   slotGrow: 1.25,
@@ -70,6 +72,7 @@ export interface LetterMatch {
   cx: number;
   cy: number;
   box: [number, number, number, number]; // minX, minY, maxX, maxY
+  hull: [number, number][]; // convex outline of the letter's stars
   score: number;
 }
 
@@ -159,6 +162,47 @@ function farthestPair(pts: [number, number][]): [number, number] {
 
 const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
+type Pt = [number, number];
+
+/** Convex hull (monotone chain), counter-clockwise in math orientation. */
+function convexHull(points: Pt[]): Pt[] {
+  const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: Pt, a: Pt, b: Pt) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (list: Pt[]) => {
+    const h: Pt[] = [];
+    for (const p of list) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+      h.push(p);
+    }
+    h.pop();
+    return h;
+  };
+  return [...half(pts), ...half([...pts].reverse())];
+}
+
+/**
+ * True if two letters come closer than `gap` (chart units): their outlines,
+ * grown by `gap`, touch. Separating-axis test on the convex hulls.
+ */
+export function lettersOverlap(a: LetterMatch, b: LetterMatch, gap: number): boolean {
+  const axes: Pt[] = [];
+  for (const hull of [a.hull, b.hull]) {
+    for (let i = 0; i < hull.length; i++) {
+      const p = hull[i], q = hull[(i + 1) % hull.length];
+      axes.push([q[1] - p[1], p[0] - q[0]]); // edge normal
+    }
+    if (hull.length === 2) axes.push([hull[1][0] - hull[0][0], hull[1][1] - hull[0][1]]);
+  }
+  for (const [ax, ay] of axes) {
+    const len = Math.hypot(ax, ay);
+    if (len === 0) continue;
+    const proj = (h: Pt[]) => h.map(([x, y]) => (x * ax + y * ay) / len);
+    const pa = proj(a.hull), pb = proj(b.hull);
+    if (Math.min(...pb) - Math.max(...pa) > gap || Math.min(...pa) - Math.max(...pb) > gap) return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Matching one letter
 
@@ -230,6 +274,7 @@ function complete(
     error: fit.rms, meanMag,
     height: fit.scale, angle: fit.angle, origin: fit.origin,
     cx: (box[0] + box[2]) / 2, cy: (box[1] + box[3]) / 2, box,
+    hull: convexHull(used.map((s) => [s.x, s.y])),
     score: fit.rms / opt.tolerance + 0.35 * Math.max(0, meanMag - 2),
   };
 }
@@ -363,6 +408,7 @@ function writeLines(lines: Entry[][], pools: Pool[], opt: MatchOptions): State |
         const slot = nextSlot(st, lines, line, idx, opt);
         for (const { m, dev } of searchSlot(entry.t, slot, pools[level], opt)) {
           if (m.stars.some((s) => st.used.has(s.id))) continue;
+          if (st.picks.some((p) => lettersOverlap(p, m, opt.minClearance * Math.min(p.height, m.height)))) continue;
           const bend = idx > 0 ? st.bend + wrapAngle(m.angle - slot.angle) : st.bend;
           if (Math.abs(bend) > maxTotal) continue;
           const used = new Set(st.used);
@@ -388,10 +434,6 @@ function writeLines(lines: Entry[][], pools: Pool[], opt: MatchOptions): State |
   return beam[0] ?? null;
 }
 
-function boxesOverlap(p: LetterMatch["box"], q: LetterMatch["box"], pad: number) {
-  return p[0] - pad < q[2] && q[0] - pad < p[2] && p[1] - pad < q[3] && q[1] - pad < p[3];
-}
-
 /** Fallback: each letter wherever it fits best (order shown by numbering instead). */
 function scatter(entries: Entry[], pools: Pool[], opt: MatchOptions): { state: State; missing: NameMatch["missing"] } {
   const cache = new Map<string, LetterMatch[]>();
@@ -411,7 +453,8 @@ function scatter(entries: Entry[], pools: Pool[], opt: MatchOptions): { state: S
       for (const st of beam)
         for (const c of cands) {
           if (c.stars.some((s) => st.used.has(s.id))) continue;
-          if (st.picks.some((p) => boxesOverlap(p.box, c.box, 0.25 * Math.min(p.height, c.height)))) continue;
+          // Scattered letters get extra room so they read as separate shapes.
+          if (st.picks.some((p) => lettersOverlap(p, c, 2 * opt.minClearance * Math.min(p.height, c.height)))) continue;
           const used = new Set(st.used);
           c.stars.forEach((s) => used.add(s.id));
           next.push({ picks: [...st.picks, { ...c, position }], used, cost: st.cost + c.score, bend: 0 });
