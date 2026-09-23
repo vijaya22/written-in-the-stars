@@ -18,12 +18,22 @@ export class MatchPool {
   private running = new Map<Worker, Job>();
   private nextId = 0;
 
-  constructor(size = Math.max(1, availableParallelism() - 1)) {
+  // One per core: the main thread only routes requests, so it barely competes.
+  constructor(size = Math.max(1, availableParallelism())) {
     for (let i = 0; i < size; i++) this.spawn();
   }
 
   get size() {
     return this.idle.length + this.running.size;
+  }
+
+  /** Tasks waiting for a free worker. */
+  get backlog() {
+    return this.queue.length;
+  }
+
+  close() {
+    for (const w of [...this.idle, ...this.running.keys()]) w.terminate();
   }
 
   private spawn() {

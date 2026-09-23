@@ -9,7 +9,8 @@
 //   GET /api/health
 //   everything else: the built site in dist/ (after `npm run build`)
 //
-//   PORT (default 8787), WORKERS (default: CPU cores - 1)
+//   PORT (default 8787), WORKERS (default: one per CPU core)
+//   TRUST_PROXY=1 when behind a reverse proxy (Caddy): client IP from X-Forwarded-For
 
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -24,6 +25,46 @@ import { MatchPool } from "./pool.ts";
 const PORT = Number(process.env.PORT ?? 8787);
 const DIST = fileURLToPath(new URL("../dist/", import.meta.url));
 const pool = new MatchPool(process.env.WORKERS ? Number(process.env.WORKERS) : undefined);
+const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+
+// ---------------------------------------------------------------------------
+// Abuse limits: a night search is ~25 matching jobs, so it is metered per visitor,
+// and the whole server refuses new searches when the job queue is already long.
+
+class TooMany extends Error {}
+
+const LIMITS = { search: { perMinute: 20, burst: 10 }, light: { perMinute: 240, burst: 60 } };
+const buckets = new Map<string, { tokens: number; at: number }>();
+
+function clientIp(req: IncomingMessage): string {
+  const forwarded = TRUST_PROXY ? String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "";
+  return forwarded || req.socket.remoteAddress || "unknown";
+}
+
+/** Token bucket per visitor and kind of request. */
+function rateLimit(req: IncomingMessage, kind: keyof typeof LIMITS) {
+  const { perMinute, burst } = LIMITS[kind];
+  const key = `${kind}|${clientIp(req)}`;
+  const now = Date.now();
+  const b = buckets.get(key) ?? { tokens: burst, at: now };
+  b.tokens = Math.min(burst, b.tokens + ((now - b.at) / 60000) * perMinute);
+  b.at = now;
+  if (b.tokens < 1) throw new TooMany("too many requests; please wait a moment");
+  b.tokens -= 1;
+  buckets.set(key, b);
+}
+
+// Forget idle visitors so the table doesn't grow forever.
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60000;
+  for (const [k, b] of buckets) if (b.at < cutoff) buckets.delete(k);
+}, 60000).unref();
+
+const MAX_BACKLOG = 400; // queued matching jobs (~16 night searches) before new searches are turned away
+
+function checkCapacity() {
+  if (pool.backlog > MAX_BACKLOG) throw new TooMany("the stars are busy right now; please try again in a minute");
+}
 
 // ---------------------------------------------------------------------------
 // Input
@@ -121,12 +162,16 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   if (url.pathname === "/api/health") return json(res, 200, { ok: true, workers: pool.size });
 
   if (url.pathname === "/api/night") {
+    rateLimit(req, "search");
     const { name, lat, lon, visibleMag, num } = params(url);
     const from = num("from", MIN_TIME, MAX_TIME);
+    checkCapacity();
     return json(res, 200, await night(name, lat, lon, from, visibleMag), 3600);
   }
 
   if (url.pathname === "/api/match") {
+    rateLimit(req, "light");
+    checkCapacity();
     const { name, lat, lon, visibleMag, num } = params(url);
     const time = num("time", MIN_TIME, MAX_TIME);
     // In twilight the sky itself hides the fainter stars.
@@ -134,6 +179,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const match: NameMatch = await pool.run({ name, lat, lon, time, scatter: true, visibleMag: limit });
     return json(res, 200, { match }, 3600);
   }
+
+  if (url.pathname.startsWith("/api/places")) rateLimit(req, "light");
 
   if (url.pathname === "/api/places") {
     const q = (url.searchParams.get("q") ?? "").slice(0, 80);
@@ -155,11 +202,12 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   serveStatic(url, res);
 }
 
-createServer((req, res) => {
+const server = createServer((req, res) => {
   const start = performance.now();
   handle(req, res)
     .catch((err) => {
       if (err instanceof BadRequest) return json(res, 400, { error: err.message });
+      if (err instanceof TooMany) return json(res, 429, { error: err.message });
       console.error(err);
       json(res, 500, { error: "internal error" });
     })
@@ -168,4 +216,17 @@ createServer((req, res) => {
       const path = (req.url ?? "").split("?")[0];
       if (path.startsWith("/api/")) console.log(`${req.method} ${path} ${res.statusCode} ${(performance.now() - start).toFixed(0)}ms`);
     });
-}).listen(PORT, () => console.log(`listening on http://localhost:${PORT} (${pool.size} match workers)`));
+});
+server.listen(PORT, () => console.log(`listening on http://localhost:${PORT} (${pool.size} match workers)`));
+
+// Docker/systemd stop: finish in-flight requests, then exit.
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.on(signal, () => {
+    console.log(`${signal}: shutting down`);
+    server.close(() => {
+      pool.close();
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000).unref();
+  });
+}

@@ -1,0 +1,30 @@
+# docker compose up -d --build     (DOMAIN comes from .env; see DEPLOY.md)
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      WORKERS: ${WORKERS:-}
+    # Not published: only Caddy talks to it.
+    expose:
+      - "8787"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # certificates: keep across restarts
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

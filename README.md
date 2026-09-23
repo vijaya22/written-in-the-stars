@@ -16,7 +16,7 @@ Production: one process serves the API and the built site.
 npm run build && npm start          # http://localhost:8787   (PORT, WORKERS env vars)
 ```
 
-Needs Node ≥ 22.18 (runs TypeScript directly).
+Needs Node ≥ 22.18 (runs TypeScript directly). To host it on a server with HTTPS, see [DEPLOY.md](DEPLOY.md).
 
 ## Checks
 
