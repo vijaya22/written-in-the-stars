@@ -1,5 +1,6 @@
 import "./style.css";
-import { visibleSky, type CatalogStar, type SkyStar } from "./astro.ts";
+import { visibleBodies, visibleSky, type CatalogStar, type SkyBody, type SkyStar } from "./astro.ts";
+import { solarSystem } from "./ephemeris.ts";
 import { matchName, type NameMatch } from "./matcher.ts";
 import { renderSky } from "./render.ts";
 
@@ -33,6 +34,7 @@ const legend = $<HTMLElement>("#legend");
 
 let catalog: CatalogStar[] = [];
 let sky: SkyStar[] = [];
+let bodies: SkyBody[] = [];
 let match: NameMatch | null = null;
 let progress = 1;
 let custom: [number, number] | null = null;
@@ -72,7 +74,7 @@ function currentPlace(): Place {
 }
 
 function draw() {
-  renderSky(canvas, { sky, match, progress });
+  renderSky(canvas, { sky, bodies, match, progress });
 }
 
 function run() {
@@ -81,6 +83,8 @@ function run() {
   const when = wallTimeToDate(whenInput.value, timeZone);
   lastPlace = currentPlace();
   sky = visibleSky(catalog, when, lat, lon);
+  // Same naked-eye limit as the star catalog: Uranus sometimes makes it, Neptune never does.
+  bodies = visibleBodies(solarSystem(when), when, lat, lon).filter((b) => b.mag <= 6);
   const name = nameInput.value.trim();
   match = name ? matchName(name, sky) : null;
 
@@ -108,6 +112,14 @@ function run() {
       li.textContent = `${m.char}: no room left in tonight's sky`;
       legend.append(li);
     }
+  }
+
+  const alsoUp = bodies.map((b) => (b.kind === "moon" ? `Moon (${Math.round(100 * (b.illuminated ?? 1))}% lit)` : b.name));
+  if (alsoUp.length) {
+    const li = document.createElement("li");
+    li.className = "also";
+    li.textContent = `Also in the sky: ${alsoUp.join(" · ")}`;
+    legend.append(li);
   }
 
   // Animate the letters drawing in

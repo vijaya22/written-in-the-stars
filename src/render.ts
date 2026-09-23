@@ -1,4 +1,4 @@
-import type { SkyStar } from "./astro.ts";
+import type { SkyBody, SkyStar } from "./astro.ts";
 import type { NameMatch } from "./matcher.ts";
 
 /** Rough B-V color index -> star color. */
@@ -16,13 +16,42 @@ function starRadius(mag: number): number {
   return Math.max(0.45, 3.4 - 0.55 * mag);
 }
 
+/** Moon disk with its real phase; `litAngle` points toward the Sun. */
+function drawMoon(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, lit: number, litAngle: number) {
+  const glow = ctx.createRadialGradient(x, y, r * 0.8, x, y, r * 3.5);
+  glow.addColorStop(0, `rgba(240, 236, 220, ${0.08 + 0.22 * lit})`);
+  glow.addColorStop(1, "rgba(240, 236, 220, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(x, y, r * 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(litAngle);
+  ctx.fillStyle = "#3a3f52";
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  // Lit limb on the Sun side (+x), closed off by the terminator ellipse.
+  ctx.fillStyle = "#f4f1e8";
+  ctx.beginPath();
+  ctx.arc(0, 0, r, -Math.PI / 2, Math.PI / 2);
+  const rx = r * Math.abs(2 * lit - 1);
+  if (lit >= 0.5) ctx.ellipse(0, 0, rx, r, 0, Math.PI / 2, (3 * Math.PI) / 2, false);
+  else ctx.ellipse(0, 0, rx, r, 0, Math.PI / 2, -Math.PI / 2, true);
+  ctx.fill();
+  ctx.restore();
+}
+
 export interface RenderState {
   sky: SkyStar[];
+  bodies: SkyBody[];
   match: NameMatch | null;
   progress: number; // 0..1, animates the letter strokes
 }
 
-export function renderSky(canvas: HTMLCanvasElement, { sky, match, progress }: RenderState) {
+export function renderSky(canvas: HTMLCanvasElement, { sky, bodies, match, progress }: RenderState) {
   const dpr = window.devicePixelRatio || 1;
   const size = canvas.clientWidth;
   if (canvas.width !== size * dpr) {
@@ -75,6 +104,31 @@ export function renderSky(canvas: HTMLCanvasElement, { sky, match, progress }: R
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+
+  // Moon and planets, labelled so they can be told apart from stars
+  ctx.font = `${Math.round(11 * Math.max(1, k))}px system-ui, sans-serif`;
+  ctx.textAlign = "left";
+  for (const b of bodies) {
+    const [x, y] = px(b);
+    let r: number;
+    if (b.kind === "moon") {
+      r = 11 * k;
+      drawMoon(ctx, x, y, r, b.illuminated ?? 1, b.litAngle ?? 0);
+    } else {
+      r = Math.max(2.2, starRadius(b.mag)) * k;
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 3 * k, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(200, 210, 240, 0.75)";
+    ctx.fillText(b.name, x + r + 5 * k, y);
+  }
   ctx.restore();
 
   if (!match) return;
