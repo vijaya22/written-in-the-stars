@@ -117,7 +117,32 @@ fieldset.sky legend { padding: 0; margin-bottom: 4px; }
 button { cursor: pointer; background: var(--accent); color: #1a1405; border-color: transparent; font-weight: 600; }
 button.ghost { background: transparent; color: var(--text); border-color: var(--border); font-weight: 400; }
 
-figure { margin: 24px 0 8px; }
+figure { margin: 24px 0 8px; position: relative; }
+
+/* Fact card for a star, planet or the Moon: beside it on wide screens, a sheet on phones. */
+.star-card {
+  position: absolute; z-index: 5; width: 280px; padding: 14px 16px 12px;
+  background: #0d1430; border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55); color: var(--text); font-size: 0.9rem; text-align: left;
+}
+.star-card[hidden] { display: none; }
+.star-card h3 { margin: 0 28px 2px 0; font-family: Georgia, serif; font-weight: 400; font-size: 1.3rem; color: var(--accent); }
+.star-card .card-sub { margin: 0 0 8px; color: var(--muted); font-size: 0.85rem; }
+.star-card ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.star-card .card-close {
+  position: absolute; top: 6px; right: 6px; min-height: 36px; min-width: 36px; padding: 0;
+  background: transparent; border: 0; color: var(--muted); font-size: 1.4rem; line-height: 1;
+}
+@media (max-width: 560px) {
+  .star-card {
+    position: fixed; left: 8px; right: 8px; bottom: 8px; top: auto; width: auto; max-height: 40vh; overflow-y: auto;
+    font-size: 0.85rem; padding: 12px 14px 10px;
+  }
+  .star-card h3 { font-size: 1.15rem; }
+}
+
+.explore-hint { text-align: center; margin: 4px 0 0; }
+.explore-hint[hidden] { display: none; }
 /* The whole chart fits on screen, so the finished name is seen at once. */
 #sky { display: block; width: min(100%, 720px, calc(100vh - 150px)); width: min(100%, 720px, calc(100svh - 150px)); aspect-ratio: 1; margin: 0 auto; }
 figcaption { text-align: center; color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
@@ -148,7 +173,17 @@ a.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; 
 
 #legend { list-style: none; padding: 0; margin: 16px 0; display: grid; gap: 6px; }
 #legend li { display: flex; gap: 12px; align-items: baseline; font-size: 0.9rem; color: var(--muted); }
-#legend .letter { font-family: Georgia, serif; font-size: 1.3rem; color: var(--accent); min-width: 1.2em; }
+#legend .letter {
+  font-family: Georgia, serif; font-size: 1.3rem; color: var(--accent); min-width: 44px; min-height: 40px;
+  padding: 0 8px; background: transparent; border: 1px solid transparent; border-radius: 8px; font-weight: 400;
+}
+#legend .letter:hover, #legend .letter[aria-pressed="true"] { border-color: var(--accent); background: rgba(255, 214, 140, 0.1); }
+#legend .star-name {
+  min-height: 0; padding: 2px 0; background: none; border: 0; border-radius: 0; font: inherit; font-weight: 400;
+  color: var(--text); text-decoration: underline dotted rgba(255, 214, 140, 0.5); text-underline-offset: 3px; cursor: pointer;
+}
+#legend .star-name:hover { color: var(--accent); }
+#legend li { align-items: center; }
 #legend .missing { color: #d99; }
 #legend .also { margin-top: 6px; }
 #legend .note { color: var(--text); }

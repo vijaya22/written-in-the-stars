@@ -3,7 +3,10 @@
 
 import type { Body } from "./ephemeris.ts";
 
-export type CatalogStar = [ra: number, dec: number, mag: number, ci: number, name: string];
+export type CatalogStar = [
+  ra: number, dec: number, mag: number, ci: number, name: string,
+  distanceLy: number | null, constellation: string, spectrum: string, luminosity: number | null,
+];
 
 export interface SkyStar {
   id: number;

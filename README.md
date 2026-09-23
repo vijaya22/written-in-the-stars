@@ -9,6 +9,10 @@ Live at **https://stars.vijaya.io**.
   the Moon (with its phase) and planets are computed too.
 - **Your name in stars:** each letter is a real star pattern; letters never overlap, and the
   chart is turned so the name reads left to right. Each letter lists the named stars it uses.
+- **Explore it:** hover or tap a letter to bring it forward; tap any star, planet or the Moon
+  for a card of facts ("About 500 light-years away: the light you see tonight left it around
+  1530", "A red supergiant", "The 10th brightest star in the night sky"). The letter list does
+  the same with buttons, for keyboards and screen readers.
 - **Best time tonight:** "Find" searches dusk to dawn and picks the moment the name reads best,
   with where to look ("face south-east, about 55° up").
 - **Honest about visibility:** choose City / Suburb / Dark sky; stars too faint for your sky
@@ -68,7 +72,8 @@ locations.
 
 Both generated files are committed; rebuild them only to update the sources.
 
-- `public/stars.json` from the [HYG database](https://github.com/astronexus/HYG-Database) (CC BY-SA 4.0):
+- `public/stars.json` (position, brightness, colour, name, distance, constellation, spectral
+  type, luminosity for 5,000 naked-eye stars) from the [HYG database](https://github.com/astronexus/HYG-Database) (CC BY-SA 4.0):
   ```sh
   curl -L -o data/hygdata_v41.csv https://raw.githubusercontent.com/astronexus/HYG-Database/main/hyg/CURRENT/hygdata_v41.csv
   npm run stars
@@ -86,6 +91,9 @@ Both generated files are committed; rebuild them only to update the sources.
 - `src/astro.ts`: sidereal time → altitude/azimuth for each star → zenith-centred sky chart.
 - `src/ephemeris.ts`: Moon (with phase) and planets from orbital elements; within ~5′ of JPL Horizons.
 - `src/glyphs.ts`: each letter as a few vertices + strokes.
+- `src/star-facts.ts`: facts about a star, worked out from the catalog (distance, temperature
+  from spectral type, luminosity, brightness rank, constellation).
+- `src/explore.ts`: letter highlighting, tapping stars, and the fact card.
 - `src/sky.ts`: sky brightness (city / suburb / dark) and twilight: which stars can be seen.
 - `src/matcher.ts`: finds placements where every vertex of a letter lands on a real star, then lays
   the name out like text (any direction; the chart is turned to read left to right). Letters never

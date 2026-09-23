@@ -153,6 +153,21 @@ export interface RenderState {
   progress: number; // 0..1, animates the letter strokes
   sunAlt: number; // degrees: sets daylight / twilight / night
   limitMag: number; // faintest star the viewer can see (light pollution, twilight)
+  focusLetter?: number | null; // index into match.letters: that letter stands out, the rest fade
+  selected?: { x: number; y: number } | null; // chart position of the object whose card is open
+}
+
+/**
+ * Where things land on a chart of `size` px, turned so the name reads left to
+ * right. Drawing and tapping both use this, so a tap finds what was drawn there.
+ */
+export function chartGeometry(size: number, match: NameMatch | null) {
+  const rot = -(match?.readingAngle ?? 0);
+  const rc = Math.cos(rot), rs = Math.sin(rot);
+  const R = size / 2 - 22 * Math.max(1, size / 640);
+  const cx = size / 2, cy = size / 2;
+  const px = (s: { x: number; y: number }) => [cx + (s.x * rc - s.y * rs) * R, cy + (s.x * rs + s.y * rc) * R] as const;
+  return { rot, R, cx, cy, px, k: size / 640 };
 }
 
 const mix = (a: Rgb, b: Rgb | undefined, t: number) =>
@@ -174,12 +189,11 @@ export interface RenderTarget {
  * and posters, pass `ctx` + `size` + `origin`; `canvas` may then be null.
  */
 export function renderSky(canvas: HTMLCanvasElement | null, state: RenderState, out: RenderTarget = {}) {
-  const { sky, bodies, match, progress, sunAlt, limitMag } = state;
+  const { sky, bodies, match, progress, sunAlt, limitMag, focusLetter, selected } = state;
   const p: Palette = out.palette ?? PALETTES.midnight;
-  // Turn the chart so the name reads left to right (the sky has no "up").
-  const rot = -(match?.readingAngle ?? 0);
-  const rc = Math.cos(rot), rs = Math.sin(rot);
   const size = out.size ?? canvas!.clientWidth;
+  // Turn the chart so the name reads left to right (the sky has no "up").
+  const { rot, R, cx, cy, px, k } = chartGeometry(size, match);
   let ctx: CanvasRenderingContext2D;
   if (out.ctx) {
     ctx = out.ctx;
@@ -199,10 +213,6 @@ export function renderSky(canvas: HTMLCanvasElement | null, state: RenderState, 
   // Only a theme with a daytime colour shows daylight; print themes always look like night.
   const day = p.day ? daylight(sunAlt) : 0;
 
-  const R = size / 2 - 22 * Math.max(1, size / 640);
-  const cx = size / 2, cy = size / 2;
-  const px = (s: { x: number; y: number }) => [cx + (s.x * rc - s.y * rs) * R, cy + (s.x * rs + s.y * rc) * R] as const;
-  const k = size / 640; // scale star sizes with the canvas
   const line = Math.max(1, k); // line widths and text grow on big outputs, never shrink below 1
 
   // Sky dome: night, brightening through twilight into day
@@ -309,7 +319,20 @@ export function renderSky(canvas: HTMLCanvasElement | null, state: RenderState, 
   }
   ctx.restore();
 
+  const drawSelection = () => {
+    if (!selected) return;
+    const [x, y] = px(selected);
+    ctx.save();
+    ctx.strokeStyle = p.order;
+    ctx.lineWidth = 1.5 * line;
+    ctx.beginPath();
+    ctx.arc(x, y, 11 * Math.max(k, 0.8), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  };
+
   if (!match) {
+    drawSelection();
     ctx.restore();
     return;
   }
@@ -343,12 +366,17 @@ export function renderSky(canvas: HTMLCanvasElement | null, state: RenderState, 
 
   // Letters: strokes draw in one after another
   const n = match.letters.length;
+  const focusing = focusLetter !== null && focusLetter !== undefined;
   match.letters.forEach((l, i) => {
     const local = Math.max(0, Math.min(1, progress * n - i));
     if (local <= 0) return;
+    // Exploring one letter: it stands out, the others fade back.
+    const fade = focusing && i !== focusLetter ? 0.22 : 1;
+    const bold = focusing && i === focusLetter ? 1.5 : 1;
     ctx.save();
+    ctx.globalAlpha = fade;
     ctx.strokeStyle = p.letterStroke;
-    ctx.lineWidth = 1.6 * line * (p.letterWidth ?? 1);
+    ctx.lineWidth = 1.6 * line * (p.letterWidth ?? 1) * bold;
     ctx.lineCap = "round";
     if (p.letterShadow) {
       ctx.shadowColor = p.letterShadow;
@@ -369,7 +397,7 @@ export function renderSky(canvas: HTMLCanvasElement | null, state: RenderState, 
     ctx.restore();
 
     ctx.save();
-    ctx.globalAlpha = local;
+    ctx.globalAlpha = local * fade;
     for (const s of l.stars) {
       const [x, y] = px(s);
       if (s.mag > limitMag) {
@@ -399,5 +427,6 @@ export function renderSky(canvas: HTMLCanvasElement | null, state: RenderState, 
     }
     ctx.restore();
   });
+  drawSelection();
   ctx.restore();
 }

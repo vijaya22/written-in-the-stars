@@ -54,12 +54,20 @@ for (const line of lines.slice(1)) {
   if (r.id === "0") continue; // the Sun
   const mag = Number(r.mag);
   if (!(mag <= MAG_LIMIT)) continue;
+  // HYG uses 100000 pc for "distance unknown".
+  const pc = Number(r.dist);
+  const ly = pc > 0 && pc < 100000 ? Math.round(pc * 3.26156) : null;
+  const lum = Number(r.lum);
   stars.push([
     Number(Number(r.ra).toFixed(5)),   // right ascension, hours (J2000)
     Number(Number(r.dec).toFixed(4)),  // declination, degrees (J2000)
     Number(mag.toFixed(2)),            // apparent magnitude
     r.ci === "" ? 0.6 : Number(Number(r.ci).toFixed(2)), // B-V color index
     displayName(r),
+    ly,                                // distance, light-years (null if unknown)
+    r.con,                             // constellation (IAU abbreviation)
+    r.spect.slice(0, 12),              // spectral type, e.g. "M1-2Ia-Iab"
+    lum > 0 ? Number(lum.toPrecision(2)) : null, // luminosity, Sun = 1
   ]);
 }
 

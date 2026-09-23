@@ -7,6 +7,7 @@ import { nextDark, sunAltitude, type NightResult } from "./night.ts";
 import { isSkyQuality, SKY_LABEL, SKY_LIMIT, twilightLimit, type SkyQuality } from "./sky.ts";
 import { createPlacePicker, placeLabel, type ApiPlace } from "./place-picker.ts";
 import { renderSky } from "./render.ts";
+import { createExplorer } from "./explore.ts";
 import { imageText as describeImage, lookDirection } from "./describe.ts";
 import { dateToWallTime, wallTimeToDate } from "./time.ts";
 import { composeImage, download, isPosterSize, POSTER_SIZES, THEME_LABELS, toBlob, type ImageFormat } from "./share.ts";
@@ -30,6 +31,7 @@ const legend = $<HTMLElement>("#legend");
 const status = $<HTMLElement>("#status");
 const nameNote = $<HTMLElement>("#name-note");
 const skySummary = $<HTMLElement>("#sky-summary");
+const exploreHint = $<HTMLElement>("#explore-hint");
 
 const SKY_WORD: Record<SkyQuality, string> = { city: "city sky", suburb: "suburban sky", dark: "dark sky" };
 
@@ -97,8 +99,15 @@ function moveTo(next: Place) {
 const fromApi = (p: ApiPlace): Place => [placeLabel(p), p.lat, p.lon, p.timeZone];
 const picker = createPlacePicker(placeInput, placeList, (p) => moveTo(fromApi(p)));
 
+const explorer = createExplorer({
+  canvas,
+  card: $<HTMLElement>("#star-card"),
+  state: () => ({ catalog, sky, bodies, match, limitMag, skyLabel: SKY_LABEL[skyQuality()] }),
+  redraw: () => draw(),
+});
+
 function draw() {
-  renderSky(canvas, { sky, bodies, match, progress, sunAlt, limitMag });
+  renderSky(canvas, { sky, bodies, match, progress, sunAlt, limitMag, focusLetter: explorer.focusLetter(), selected: explorer.selectedPoint() });
 }
 
 
@@ -207,6 +216,8 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
   limitMag = Math.min(SKY_LIMIT[skyQuality()], twilightLimit(sunAlt));
   const name = nameInput.value.trim();
   match = found;
+  explorer.reset();
+  exploreHint.hidden = !match?.letters.length;
   shown = { when, name };
   updateSkySummary(when);
   shareBar.hidden = !match?.letters.length;
@@ -249,19 +260,21 @@ function show(when: Date, found: NameMatch | null, headline: string | null) {
       li.textContent = "This sky can’t fit the name in one line, so the letters are numbered in reading order.";
       legend.append(li);
     }
-    for (const l of match.letters) {
+    match.letters.forEach((l, i) => {
       const li = document.createElement("li");
-      const letter = document.createElement("span");
-      letter.className = "letter";
-      letter.textContent = l.char;
-      const names = [...new Set([...l.stars].sort((a, b) => a.mag - b.mag).map((s) => s.name))];
+      // Each star once, brightest first; each name opens that star's card.
+      const unique = [...new Map([...l.stars].sort((a, b) => a.mag - b.mag).map((s) => [s.id, s])).values()];
       const stars = document.createElement("span");
-      stars.textContent = names.join(" · ");
+      stars.className = "stars";
+      unique.forEach((s, j) => {
+        if (j) stars.append(" · ");
+        stars.append(explorer.starButton(s, i));
+      });
       const hidden = l.stars.filter((s) => s.mag > limitMag).length;
-      if (hidden) stars.textContent += ` (${hidden} likely too faint here)`;
-      li.append(letter, stars);
+      if (hidden) stars.append(` (${hidden} likely too faint here)`);
+      li.append(explorer.letterButton(i, l.char), stars);
       legend.append(li);
-    }
+    });
     for (const m of match.missing) {
       const li = document.createElement("li");
       li.className = "missing";
