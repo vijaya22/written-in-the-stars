@@ -10,9 +10,14 @@
 
 * { box-sizing: border-box; }
 
+/* iPhone: keep text sizes as designed (no auto-enlarging in landscape). */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
 body {
   margin: 0;
-  background: radial-gradient(ellipse at top, #0d1430 0%, var(--bg) 60%) fixed;
+  /* Not "fixed": fixed backgrounds misbehave on iPhone Safari. */
+  background: var(--bg) radial-gradient(ellipse at top, #0d1430 0%, var(--bg) 60%) no-repeat;
+  min-height: 100vh;
   color: var(--text);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -43,7 +48,11 @@ form {
   border-radius: 12px;
 }
 
-.field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 0.85rem; color: var(--muted); }
+
+/* iPhone's date picker grows wider than its box unless told otherwise, and centres its text. */
+input[type="datetime-local"] { width: 100%; min-width: 0; -webkit-appearance: none; appearance: none; display: block; }
+input[type="datetime-local"]::-webkit-date-and-time-value { text-align: left; }
 .field.grow { flex: 1 1 180px; }
 .field.grow > span { font-size: 0.95rem; color: var(--text); }
 #name { font-size: 1.15rem; min-height: 52px; }
@@ -69,6 +78,8 @@ form {
 
 input, select, button {
   font: inherit;
+  /* 16px or larger: iPhone Safari zooms the page into smaller text boxes, cutting it off. */
+  font-size: max(1rem, 1em);
   color: var(--text);
   background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--border);

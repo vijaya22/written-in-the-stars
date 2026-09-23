@@ -7,6 +7,7 @@ import { PALETTES, renderSky, type Palette, type RenderState, type ThemeName } f
 export interface ImageText {
   title: string; // “Vijaya” written in the stars
   lines: string[]; // place and time, where to look
+  posterLines: string[]; // the same without the place: posters get printed and hung up
   letters: { char: string; stars: string }[]; // posters: the stars in each letter
   credit: string;
 }
@@ -108,14 +109,15 @@ export function composeImage(state: RenderState, text: ImageText, format: ImageF
   // The chart, as large as the text below it allows.
   const poster = format !== "card";
   const chartTop = 150 * u;
+  const captionLines = poster ? text.posterLines : text.lines;
   const letterRows = poster && text.letters.length ? Math.ceil(text.letters.length / 2) : 0;
-  const reserved = (50 + 42 * text.lines.length + (letterRows ? 30 + 52 * letterRows : 0) + 90) * u;
+  const reserved = (50 + 42 * captionLines.length + (letterRows ? 30 + 52 * letterRows : 0) + 90) * u;
   const chart = Math.min(w - 2 * margin, h - chartTop - reserved);
   draw(chart, (w - chart) / 2, chartTop);
 
   let y = chartTop + chart + 50 * u;
   ctx.fillStyle = page.text;
-  for (const line of text.lines) {
+  for (const line of captionLines) {
     fitText(ctx, line, w - 2 * margin, sans, Math.round(30 * u));
     ctx.fillText(line, w / 2, y);
     y += 42 * u;

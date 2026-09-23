@@ -34,9 +34,11 @@ export function letterStars(m: NameMatch): { char: string; stars: string }[] {
 export function imageText(name: string, placeLabel: string, when: Date, timeZone: string, m: NameMatch): ImageText {
   const date = when.toLocaleString("en-GB", { dateStyle: "long", timeStyle: "short", timeZone });
   const look = lookDirection(m);
+  const lookLine = look[0].toUpperCase() + look.slice(1);
   return {
     title: `“${name}” written in the stars`,
-    lines: [`${placeLabel} · ${date}`, look[0].toUpperCase() + look.slice(1)],
+    lines: [`${placeLabel} · ${date}`, lookLine],
+    posterLines: [date, lookLine],
     letters: letterStars(m),
     credit: "Real star positions: HYG database (CC BY-SA 4.0) · stars.vijaya.io",
   };
