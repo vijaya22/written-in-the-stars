@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Written in the Stars</title>
+    <meta name="description" content="Find your name spelled out in the real stars above you tonight." />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Written in the Stars</h1>
+        <p class="tagline">Your name, spelled out in the real stars above you.</p>
+      </header>
+
+      <form id="form">
+        <label class="field grow">
+          <span>Name</span>
+          <input id="name" autocomplete="off" maxlength="16" placeholder="Type a name" />
+        </label>
+        <label class="field">
+          <span>Place</span>
+          <select id="place"></select>
+        </label>
+        <label class="field">
+          <span>Date &amp; time <small>(local time at that place)</small></span>
+          <input id="when" type="datetime-local" />
+        </label>
+        <div class="actions">
+          <button type="submit">Find it</button>
+          <button type="button" id="locate" class="ghost">Use my location</button>
+        </div>
+      </form>
+
+      <figure>
+        <canvas id="sky"></canvas>
+        <figcaption id="caption"></figcaption>
+      </figure>
+      <ol id="legend"></ol>
+
+      <footer>
+        Star positions from the <a href="https://github.com/astronexus/HYG-Database">HYG database</a> (CC BY-SA 4.0).
+        The chart is the whole sky overhead: north at the top, east on the left, as when you lie back and look up.
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
